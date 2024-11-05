@@ -13,3 +13,15 @@ test2.py
 test4.py
 test5.py
 test6.py
+.idea
+__pycache__
+gazefollower/__pycache__
+gazefollower/calibration/__pycache__
+gazefollower/camera/__pycache__
+gazefollower/face_alignment/__pycache__
+gazefollower/filter/__pycache__
+gazefollower/gaze_estimator/__pycache__
+gazefollower/logger/__pycache__
+gazefollower/misc/__pycache__
+gazefollower/res/__pycache__
+gazefollower/ui/__pycache__

@@ -24,13 +24,13 @@
 
 You can install GazeFollower via pip or by cloning the repository.
 
-### PIP
+### Installing with pip
 
 ```bash
-pip install gazefollower
+python -m pip install gazefollower
 ```
 
-### GIT CLONE
+### Git clone from Github
 
 ```bash
 git clone https://github.com/GanchengZhu/GazeFollower

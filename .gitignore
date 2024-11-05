@@ -15,6 +15,7 @@ test5.py
 test6.py
 .idea
 __pycache__
+*.pyc
 gazefollower/__pycache__
 gazefollower/calibration/__pycache__
 gazefollower/camera/__pycache__

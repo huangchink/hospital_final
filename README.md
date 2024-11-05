@@ -61,3 +61,27 @@ gaze_follower.stop_sampling()
 gaze_follower.save_data("demo.csv")
 gaze_follower.release()
 ```
+
+## Note
+
+To gain access to the base model trained on 32 million images, please send an email to zhiguo@zju.edu.cn. Upon successful processing of your request, you will receive an email containing the model.
+
+### Email Prompt
+
+Here’s a template for your request email. Please keep the subject line unchanged:
+```
+Subject: Request for Access to the Base Model Trained on 32 Million Images
+
+Dear Prof. Zhiguo,
+
+I hope this message finds you well.
+
+My name is [Your Name], and I am a [student/researcher] at [Your Affiliation]. I am writing to request access to the base model trained on 32 million images.
+
+I assure you that I will use this model solely for academic and research purposes and will not utilize it for commercial activities or share it with others.
+
+Thank you for considering my request. I look forward to receiving access to the model.
+
+Best regards,
+[Your Name]
+```

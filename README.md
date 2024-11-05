@@ -55,7 +55,7 @@ gaze_follower.calibrate()
 
 gaze_follower.start_sampling()
 # your experiment code
-gaze_follower.send_trigger()
+gaze_follower.send_trigger(10)
 # your experiment code
 gaze_follower.stop_sampling()
 gaze_follower.save_data("demo.csv")

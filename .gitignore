@@ -1,0 +1,15 @@
+gazefollower/res/model_weights/base_32m.mnn
+gazefollower.egg-info
+gazefollower_data_analysis
+tests
+build
+dist
+build.md
+build_number.txt
+n_point_recorder.py
+smooth_pursuit_recorder.py
+test.py
+test2.py
+test4.py
+test5.py
+test6.py

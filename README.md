@@ -39,7 +39,7 @@ python setup.py install
 ```
 
 
-## Quick start
+## Quick Start
 
 Here's a basic example of how to use GazeFollower:
 

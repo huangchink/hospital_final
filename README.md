@@ -44,7 +44,6 @@ python setup.py install
 Here's a basic example of how to use GazeFollower:
 
 ```python
-#!/usr/bin/bash
 # _*_ coding: utf-8 _*_
 
 from gazefollower import GazeFollower

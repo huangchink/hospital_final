@@ -87,7 +87,6 @@ class MediaPipeFaceAlignment(FaceAlignment):
         else:
             # Normalised landmarks to pixel format
             face_landmarks = _multi_face_landmarks[0].landmark
-
             face_info.status = True
             _face_mesh = []
 

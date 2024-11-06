@@ -32,7 +32,7 @@ class Camera:
         """
         if self.camera_running_state == CameraRunningState.CLOSING:
             self.camera_running_state = CameraRunningState.SAMPLING
-            self.open()
+            # self.open()
         elif self.camera_running_state in {CameraRunningState.PREVIEWING, CameraRunningState.CALIBRATING}:
             raise RuntimeError("It is under previewing or calibration and cannot start sampling")
         else:
@@ -60,7 +60,7 @@ class Camera:
         """
         if self.camera_running_state == CameraRunningState.CLOSING:
             self.camera_running_state = CameraRunningState.PREVIEWING
-            self.open()
+            # self.open()
         elif self.camera_running_state in {CameraRunningState.SAMPLING, CameraRunningState.CALIBRATING}:
             raise RuntimeError("It is under sampling or calibrating and cannot start previewing")
         else:
@@ -88,7 +88,7 @@ class Camera:
         """
         if self.camera_running_state == CameraRunningState.CLOSING:
             self.camera_running_state = CameraRunningState.CALIBRATING
-            self.open()
+            # self.open()
         elif self.camera_running_state in {CameraRunningState.SAMPLING, CameraRunningState.PREVIEWING}:
             raise RuntimeError("It is under sampling or previewing and cannot start calibrating")
         else:

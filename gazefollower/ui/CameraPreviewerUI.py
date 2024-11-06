@@ -4,7 +4,6 @@
 # Email: zhugc2016@gmail.com
 
 
-import sys
 from pathlib import Path
 
 import cv2
@@ -17,6 +16,7 @@ class CameraPreviewerUI:
     """
     Previewer for the camera device
     """
+
     def __init__(self):
         self._margin = 25
 
@@ -29,10 +29,10 @@ class CameraPreviewerUI:
                                        *self._face_image_size)
         self.face_rect = pygame.Rect(self._margin * 4 + self._face_image_size[0],
                                      self._margin * 2 + self._tip_text_size[1], *self._face_image_size)
-        self.left_eye_rect = pygame.Rect(self._margin * 2,
+        self.right_eye_rect = pygame.Rect(self._margin * 2,
                                          self._face_image_size[1] + self._margin * 4 + self._tip_text_size[1] * 2,
                                          *self._eye_image_size)
-        self.right_eye_rect = pygame.Rect(self._margin * 4 + self._face_image_size[0],
+        self.left_eye_rect = pygame.Rect(self._margin * 4 + self._face_image_size[0],
                                           self._face_image_size[1] + self._margin * 4 + self._tip_text_size[1] * 2,
                                           *self._eye_image_size)
 
@@ -94,10 +94,12 @@ class CameraPreviewerUI:
         self._table_text_color = self._color_black
         self._table_line_color = (150, 150, 150)  # Darker gray for clearer line visibility
 
-        self.screen_width = (self._face_image_size[0] + self._eye_image_size[0]
-                             + 9 * self._margin + self._table_column_width * 2)
-        self.screen_height = (self._tip_text_size[1] * 2 + self._face_image_size[1] + self._eye_image_size[1]
-                              + 6 * self._margin)
+        self._layout_width = (self._face_image_size[0] + self._eye_image_size[0]
+                              + 9 * self._margin + self._table_column_width * 2)
+        self._layout_height = (self._tip_text_size[1] * 2 + self._face_image_size[1] + self._eye_image_size[1]
+                               + 6 * self._margin)
+        self._layout_start_x = None
+        self._layout_start_y = None
 
         self.camera_gradient_surface = self._create_gradient_surface(self._face_image_size, self._color_gradient_1,
                                                                      self._color_gradient_2)
@@ -145,7 +147,7 @@ class CameraPreviewerUI:
             pygame.draw.line(surface, color, (0, y), (size[0], y))
         return surface
 
-    def draw_text(self, text, font, color, surface, rect, align='center'):
+    def draw_text(self, text, font, color, surface, rect: pygame.Rect, align='center'):
         """Draws text with antialiasing for smoother look and a border around it."""
         text_obj = font.render(text, True, color)
         text_rect = text_obj.get_rect()
@@ -193,25 +195,51 @@ class CameraPreviewerUI:
                            pygame.Rect(x + self._table_column_width + 5, y + i * self._table_row_height,
                                        self._table_column_width - 10, self._table_row_height),
                            align='left')
-        _rect = (950, + self._margin, self._table_width + 2 * self._margin,
-                 self._table_row_height * _num_rows + 2 * self._margin)
+        _rect = (x - self._margin, y - self._margin, self._table_width + 2 * self._margin,
+                 self._table_row_height * _num_rows + 5 * self._margin)
         pygame.draw.rect(screen, self._color_black, _rect, 2)
 
-        _button_boundary_width = self._table_width + self._margin * 2
-        _button_boundary_height = self.screen_height - self._table_row_height * _num_rows - self._margin * 5
-        _button_boundary_x = x - self._margin
-        _button_boundary_y = self._table_row_height * _num_rows + 4 * self._margin
+        _button_boundary_width = self._table_width
+        _button_boundary_height = self._margin * 2
+        _button_boundary_x = x
+        _button_boundary_y = self._table_row_height * _num_rows + y + self._margin
         self.stop_button_rect = pygame.Rect(_button_boundary_x, _button_boundary_y,
                                             _button_boundary_width, _button_boundary_height)
         self.draw_rounded_button(screen, self.stop_button_rect)
 
-    def draw(self, screen):
+    def _shifting_layout(self, rect: pygame.Rect):
+        return pygame.Rect(self._layout_start_x + rect.x,
+                           self._layout_start_y + rect.y,
+                           rect.width, rect.height)
+
+    def draw(self, screen: pygame.Surface):
         """
         Draw content on the screen
         :param screen: PyGame screen
         :return:
         """
         # self.load_sample_images()
+        _screen_width = screen.get_width()
+        _screen_height = screen.get_height()
+
+        self._layout_start_x = (_screen_width - self._layout_width) / 2
+        self._layout_start_y = (_screen_height - self._layout_height) / 2
+
+        # shifting the layout
+        self.camera_rect = self._shifting_layout(self.camera_rect)
+        self.face_rect = self._shifting_layout(self.face_rect)
+        self.left_eye_rect = self._shifting_layout(self.left_eye_rect)
+        self.right_eye_rect = self._shifting_layout(self.right_eye_rect)
+
+        self._camera_text_rect = self._shifting_layout(self._camera_text_rect)
+        self._face_text_rect = self._shifting_layout(self._face_text_rect)
+        self._left_eye_text_rect = self._shifting_layout(self._left_eye_text_rect)
+        self._right_eye_text_rect = self._shifting_layout(self._right_eye_text_rect)
+        _tmp_x, _tmp_y = self._table_left_top_position
+        self._table_left_top_position = (self._layout_start_x + _tmp_x, self._layout_start_y + _tmp_y)
+
+        self._rect_list = [self._shifting_layout(pygame.Rect(i)) for i in self._rect_list]
+
         self.update_face_info(FaceInfo())
 
         while self.running:
@@ -239,10 +267,10 @@ class CameraPreviewerUI:
             # Draw face info table
             self.draw_table(screen, self.face_info_dict, self._table_left_top_position)
 
+            # Draw grid
             self.draw_grid_rect(screen)
 
             pygame.display.flip()
-
 
     def draw_grid_rect(self, screen):
         for _rect in self._rect_list:
@@ -281,8 +309,9 @@ class CameraPreviewerUI:
         else:
             self.right_eye_image = self.right_eye_gradient_surface
 
-    def draw_image(self, screen, image, rect):
+    def draw_image(self, screen: pygame.Surface, image, rect: pygame.Rect):
         """Draws an image with a subtle shadow effect while maintaining the original aspect ratio."""
+
         original_width, original_height = image.get_size()
         target_width, target_height = rect.width, rect.height
 

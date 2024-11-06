@@ -75,6 +75,7 @@ class MGazeNetGazeEstimator(GazeEstimator):
 
         # Check if face is detected
         if not face_info.status:
+            gaze_info.tracking_state = TrackingState.FACE_MISSING
             return gaze_info
 
         # Check if gaze estimation is possible
@@ -148,11 +149,11 @@ class MGazeNetGazeEstimator(GazeEstimator):
         # Retrieve and process the results
         res = self.tmp_output.getNumpyData().copy()[0]
         gaze_info.features = res
-        gaze_info.gaze_coordinates = res[:2]  # Extract gaze coordinates
+        gaze_info.raw_gaze_coordinates = res[:2]  # Extract gaze coordinates
         gaze_info.status = True
         gaze_info.left_openness = face_info.left_eye_openness
         gaze_info.right_openness = face_info.right_eye_openness
-
+        gaze_info.tracking_state = TrackingState.SUCCESS
         return gaze_info
 
     def release(self):

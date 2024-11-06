@@ -1,4 +1,5 @@
-gazefollower/res/model_weights/base_32m.mnn
+gaze_follower.pptx
+gazefollower/res/model_weights/base_32M.mnn
 gazefollower.egg-info
 gazefollower_data_analysis
 tests
@@ -15,7 +16,6 @@ test5.py
 test6.py
 .idea
 __pycache__
-*.pyc
 gazefollower/__pycache__
 gazefollower/calibration/__pycache__
 gazefollower/camera/__pycache__

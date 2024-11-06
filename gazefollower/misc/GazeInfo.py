@@ -23,7 +23,9 @@ class GazeInfo:
 
     def __init__(self,
                  features: np.array = None,
-                 gaze_coordinates: np.array = None,
+                 raw_gaze_coordinates: np.array = None,
+                 calibrated_gaze_coordinates: np.array = None,
+                 filtered_gaze_coordinates: np.array = None,
                  left_openness: float = 0.0,
                  right_openness: float = 0.0,
                  event: EyeMovementEvent = EyeMovementEvent.UNKNOWN,
@@ -32,9 +34,10 @@ class GazeInfo:
                  timestamp: int = 0):
         """
         Initializes a GazeInfo instance.
-
         :param features: The features extracted from the gaze estimation model.
-        :param gaze_coordinates: The x, y coordinates of the gaze point.
+        :param raw_gaze_coordinates: The x, y coordinates of the gaze point from the gaze estimation model.
+        :param calibrated_gaze_coordinates: The x, y coordinates of the gaze point from the calibration model.
+        :param filtered_gaze_coordinates: The x, y coordinates of the gaze point from the filter.
         :param left_openness: The openness of the left eye.
         :param right_openness: The openness of the right eye.
         :param event: The type of eye movement event (default is EyeMovementEvent.UNKNOWN).
@@ -49,7 +52,9 @@ class GazeInfo:
         self.status = status
         self.tracking_state = tracking_state
         self.timestamp = timestamp
-        self.gaze_coordinates = gaze_coordinates
+        self.raw_gaze_coordinates = raw_gaze_coordinates
+        self.calibrated_gaze_coordinates = calibrated_gaze_coordinates
+        self.filtered_gaze_coordinates = filtered_gaze_coordinates
 
     def __str__(self):
         """

@@ -30,6 +30,6 @@ def clip_patch(frame, rect):
     y_end = min(y + h, frame.shape[0])
 
     # Clip the region from the frame
-    clipped_patch = frame[y:y_end, x:x_end]
+    clipped_patch = frame[y:y_end, x:x_end].copy()
 
     return clipped_patch

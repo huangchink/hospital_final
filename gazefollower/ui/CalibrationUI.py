@@ -22,7 +22,7 @@ class CalibrationUI:
 
         :param camera_position: The (x, y) position of the camera.
         :param screen_size: The (width, height) of the screen.
-        :param calibration_points: List of (x, y) calibration points as fractions of the screen size.
+        :param calibration_percentage_points: List of (x, y) calibration points as fractions of the screen size.
         """
 
         self._color_white = (255, 255, 255)
@@ -257,7 +257,7 @@ class CalibrationUI:
 
                 # Draw error bar
                 if self.gaze_info.status and self.point_elapsed_time > 0.3:
-                    self.draw_error_bar(screen, current_point, self.gaze_info.gaze_coordinates)
+                    self.draw_error_bar(screen, current_point, self.gaze_info.filtered_gaze_coordinates)
 
 
             # Update the display

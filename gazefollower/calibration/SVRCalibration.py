@@ -4,12 +4,13 @@
 # Email: zhugc2016@gmail.com
 
 import pathlib
-from typing import List
+from typing import List, Tuple
 
 import cv2 as cv
 import numpy as np
 
 from .Calibration import Calibration
+from ..logger import Log
 
 
 class SVRCalibration(Calibration):
@@ -21,7 +22,7 @@ class SVRCalibration(Calibration):
         super().__init__()
 
         if model_save_path == "":
-            self.workplace_calibration_dir = pathlib.Path.home().joinpath("GazeFollower", "Calibration")
+            self.workplace_calibration_dir = pathlib.Path.home().joinpath("GazeFollower", "calibration")
             if not self.workplace_calibration_dir.exists():
                 self.workplace_calibration_dir.mkdir(parents=True, exist_ok=True)
         else:
@@ -57,29 +58,30 @@ class SVRCalibration(Calibration):
         term_criteria = (cv.TERM_CRITERIA_MAX_ITER, 10000, 1e-4)
         svr.setTermCriteria(term_criteria)
 
-    def predict(self, features, estimated_coordinate) -> List:
+    def predict(self, features, estimated_coordinate) -> Tuple:
         """
         Predicts the x and y coordinates using the trained SVM models.
 
         :param features: np.array of shape (1, m), where m is the number of features.
                         This represents a single sample feature vector for prediction.
         :param estimated_coordinate: the estimated coordinate from the gaze estimation model.
-        :return: A list containing the predicted x and y coordinates [x_pred, y_pred].
+        :return: A tuple containing the predicted x and y coordinates calibrated, [x_pred, y_pred].
         """
         # Ensure the feature is a numpy array with the correct dtype and shape
         features = np.array(features, dtype=np.float32).reshape(1, -1)
+        features = features[:, :]
 
         # Check if models are trained before making predictions
         if not self.has_calibrated:
-            print("SVM models are not trained. It will return estimated coordinate from gaze estimation model.")
-            return estimated_coordinate
+            Log.d("SVM models are not trained. It will return estimated coordinate from gaze estimation model.")
+            return self.has_calibrated, estimated_coordinate
 
         # Predict x and y coordinates using the trained SVM models
         predicted_x = self.svr_x.predict(features)[1].flatten()[0]
         predicted_y = self.svr_y.predict(features)[1].flatten()[0]
 
         # Return the predictions as a list
-        return [predicted_x, predicted_y]
+        return self.has_calibrated, (predicted_x, predicted_y)
 
     def calibrate(self, features, labels) -> float:
         """
@@ -91,7 +93,7 @@ class SVRCalibration(Calibration):
         :return: fitness (mean Euclidean distance)
         """
         # Ensure that features and labels are numpy arrays
-        features = np.array(features, dtype=np.float32)
+        features = np.array(features, dtype=np.float32)[:, :]  # 256-dimensional
         labels = np.array(labels, dtype=np.float32)
 
         # Split labels into x and y components
@@ -106,19 +108,19 @@ class SVRCalibration(Calibration):
         except Exception as e:
             self.has_calibrated = False
 
-            print("Failed to train SVM model: {}".format(e.args))
-            print("Try to delete previously trained model.")
+            Log.d("Failed to train SVM model: {}".format(e.args))
+            Log.d("Try to delete previously trained model.")
             if self.svr_x_path.exists():
                 self.svr_x_path.unlink()  # Deletes svr_x.xml
-                print(f"Deleted: {self.svr_x_path}")
+                Log.d(f"Deleted: {self.svr_x_path}")
             else:
-                print(f"No trained model found at {self.svr_x_path}")
+                Log.d(f"No trained model found at {self.svr_x_path}")
 
             if self.svr_y_path.exists():
                 self.svr_y_path.unlink()  # Deletes svr_y.xml
-                print(f"Deleted: {self.svr_y_path}")
+                Log.d(f"Deleted: {self.svr_y_path}")
             else:
-                print(f"No trained model found at {self.svr_y_path}")
+                Log.d(f"No trained model found at {self.svr_y_path}")
 
             return float('inf')  # Return infinity as fitness to indicate training failure
 
@@ -132,7 +134,7 @@ class SVRCalibration(Calibration):
         # Calculate the mean Euclidean error
         mean_euclidean_error = np.mean(euclidean_distances)
 
-        print(f"Calibration completed with mean Euclidean error: {mean_euclidean_error:.4f}")
+        Log.d(f"Calibration completed with mean Euclidean error: {mean_euclidean_error:.4f}")
         return mean_euclidean_error
 
     def save_model(self) -> bool:
@@ -146,12 +148,12 @@ class SVRCalibration(Calibration):
         if self.svr_x.isTrained() and self.svr_y.isTrained():
             self.svr_x.save(str(self.svr_x_path))
             self.svr_y.save(str(self.svr_y_path))
-            print(f"SVR model for x coordinate saved at: {self.svr_x_path}")
-            print(f"SVR model for y coordinate saved at: {self.svr_y_path}")
+            Log.d(f"SVR model for x coordinate saved at: {self.svr_x_path}")
+            Log.d(f"SVR model for y coordinate saved at: {self.svr_y_path}")
             return True
         else:
-            print("SVR model for x coordinate has not been trained yet.")
-            print("SVR model for y coordinate has not been trained yet.")
+            Log.d("SVR model for x coordinate has not been trained yet.")
+            Log.d("SVR model for y coordinate has not been trained yet.")
             return False
 
     def release(self):

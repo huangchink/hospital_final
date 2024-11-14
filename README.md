@@ -84,3 +84,28 @@ Thank you for considering my request. I look forward to receiving access to the 
 Best regards,
 [Your Name]
 ```
+
+## License Information
+
+This project is licensed under the [Creative Commons Attribution 4.0 International License (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/).
+
+### License Terms
+
+Under the **CC BY 4.0** license, you are free to:
+
+- Copy, distribute, display, and perform the work.
+- Remix, transform, and build upon the work, even for commercial purposes.
+
+However, you must:
+
+- **Attribution**: You must give appropriate credit to the original author(s), provide a link to the license, and indicate if changes were made. You may do this in any reasonable manner, but not in any way that suggests the licensor endorses you or your use.
+
+- You may not use the material for commercial purposes unless you obtain permission from the copyright holder.
+
+For more details, please see the full [Creative Commons Attribution 4.0 International License](https://creativecommons.org/licenses/by/4.0/).
+
+### Disclaimer
+
+The work is provided "as-is" without any warranties, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, or non-infringement.
+
+

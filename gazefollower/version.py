@@ -9,8 +9,7 @@ _patch_version = '1'
 __version__ = f'{_major_version}.{_minor_version}.{_patch_version}'
 
 __title__ = "GazeFollower"
-__description__ = "GazeFollower is a toolbox for using eye trackers. " \
-                  "The SDK has to be installed on the same computer as your software application."
+__description__ = "GazeFollower is a pythonic library for web-cam gaze tracking. "
 __uri__ = "https://github.com/GanchengZhu/GazeFollower"
 __url__ = "https://github.com/GanchengZhu/GazeFollower"
 __doc__ = __description__ + " <" + __uri__ + ">"

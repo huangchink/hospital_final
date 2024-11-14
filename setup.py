@@ -70,7 +70,6 @@ setup(
 
     classifiers=[
         'Programming Language :: Python :: 3',
-        'License :: Creative Commons Attribution-NonCommercial 4.0 International',
         'Operating System :: OS Independent',
         'Development Status :: 5 - Production/Stable',
         'Intended Audience :: Developers',

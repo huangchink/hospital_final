@@ -1,5 +1,5 @@
 <div align="center">
-  <a href="https://xmake.io">
+  <a href="https://github.com/GanchengZhu/GazeFollower">
     <img width="160" height="160" src="gazefollower/res/image/gazefollower.png">
   </a>
 

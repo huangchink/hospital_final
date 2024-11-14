@@ -24,7 +24,7 @@
 
 You can install GazeFollower via pip or by cloning the repository.
 
-### Installing with pip
+### Installing with pip (Not available now)
 
 ```bash
 python -m pip install gazefollower

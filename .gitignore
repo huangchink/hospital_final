@@ -27,3 +27,4 @@ gazefollower/misc/__pycache__
 gazefollower/res/__pycache__
 gazefollower/ui/__pycache__
 .gitignore
+token

@@ -1,6 +1,6 @@
 <div align="center">
   <a href="https://github.com/GanchengZhu/GazeFollower">
-    <img width="160" height="160" src="gazefollower/res/image/gazefollower.png">
+    <img width="160" height="160" src="https://raw.githubusercontent.com/GanchengZhu/GazeFollower/main/gazefollower/res/image/gazefollower.png">
   </a>
 
   <h1>GazeFollower</h1>

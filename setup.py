@@ -45,7 +45,7 @@ setup(
 
     install_requires=[
         'mediapipe==0.10.1.0',
-        'MNN==2.9.3',
+        'MNN==2.9.5',
         'numpy',
         'opencv-python',
         'pandas',

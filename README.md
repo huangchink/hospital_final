@@ -71,7 +71,7 @@ Here’s a template for your request email. Please keep the subject line unchang
 ```
 Subject: Request for Access to the Base Model Trained on 32 Million Images
 
-Dear Prof. Zhiguo,
+Dear Prof. Zhiguo Wang,
 
 I hope this message finds you well.
 

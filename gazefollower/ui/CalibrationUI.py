@@ -36,7 +36,7 @@ class CalibrationUI:
         self.validation_points = [(round(x * self.screen_width), round(y * self.screen_height)) for x, y in
                                   validation_percentage_points]
         self.error_bar_color = (0, 255, 0)  # Green color for the error bar
-        self.error_bar_thickness = 2        # Thickness of the error bar lin
+        self.error_bar_thickness = 2  # Thickness of the error bar lin
 
         # Initialize the font
         self.guidance_font = pygame.font.SysFont('Microsoft YaHei', 28)
@@ -146,10 +146,13 @@ class CalibrationUI:
             "Press Space to start."
         ]
 
-        text_surfaces = [self.guidance_font.render(line, True, self._color_black) for line in instruction_text]
+        self.draw_text_center(screen, instruction_text)
+
+    def draw_text_center(self, screen, text):
+        text_surfaces = [self.guidance_font.render(line, True, self._color_black) for line in text]
 
         total_text_height = sum(text_surface.get_height() for text_surface in text_surfaces) + (
-                len(instruction_text) - 1) * 10
+                len(text) - 1) * 10
         start_y = (self.screen_height - total_text_height) // 2
 
         for i, text_surface in enumerate(text_surfaces):
@@ -177,6 +180,25 @@ class CalibrationUI:
 
     def draw_validation(self, screen):
         self.draw(screen, "validation")
+
+    def draw_calibration_result(self, screen, fitness, is_saved):
+        render_text = [
+            f"Calibration model fitness is {fitness:.4f} pixel",
+            f"Calibration model has been saved" if is_saved else "Calibration model has not been saved",
+            f"Press \"Enter\" to validation or \"R\" to recalibration"
+        ]
+        # print(render_text)
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                    pygame.quit()
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
+                    return False
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
+                    return True
+            screen.fill(self._color_white)
+            self.draw_text_center(screen, render_text)
+            pygame.display.flip()
 
     def draw(self, screen, draw_type="calibration"):
         """Draws each calibration point one at a time and advances when space is pressed or after minimum display
@@ -223,7 +245,7 @@ class CalibrationUI:
                             self.responses.append({
                                 'point_x': points_need_to_draw[self.current_point_index][0],
                                 'point_y': points_need_to_draw[self.current_point_index][1],
-                                'arrow_direction':  directions_need_to_draw[self.current_point_index],
+                                'arrow_direction': directions_need_to_draw[self.current_point_index],
                                 'response_key': response_key,
                                 'response_time': response_time
                             })
@@ -247,7 +269,7 @@ class CalibrationUI:
             if self.current_point_index < len(points_need_to_draw):
                 current_point = points_need_to_draw[self.current_point_index]
                 # Decide on the direction of the arrow
-                direction =  directions_need_to_draw[self.current_point_index]
+                direction = directions_need_to_draw[self.current_point_index]
                 # Draw the breathing effect
                 self.draw_breathing_effect(screen, current_point, self._arrow_image_size // 2 * 3,
                                            self._arrow_image_size // 2,
@@ -258,7 +280,6 @@ class CalibrationUI:
                 # Draw error bar
                 if self.gaze_info.status and self.point_elapsed_time > 0.3:
                     self.draw_error_bar(screen, current_point, self.gaze_info.filtered_gaze_coordinates)
-
 
             # Update the display
             pygame.display.flip()
@@ -295,6 +316,7 @@ class CalibrationUI:
 
     def draw_error_bar(self, screen, current_point, gaze_coordinates):
         # Draws a green error bar (line) between the current point and gaze coordinates
+        # print(gaze_coordinates)
         pygame.draw.line(
             screen,
             self.error_bar_color,
@@ -302,6 +324,8 @@ class CalibrationUI:
             gaze_coordinates,
             self.error_bar_thickness
         )
+        pygame.draw.circle(screen, self._color_red, gaze_coordinates, radius=50, width=3)
+
 
 # Example usage:
 if __name__ == "__main__":

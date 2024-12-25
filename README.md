@@ -93,4 +93,8 @@ This project is licensed under the [Creative Commons Attribution-NonCommercial-S
 
 The work is provided "as-is" without any warranties, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, or non-infringement.
 
+# NEED TO IMPLEMENTATION
 
+- BLINK DETECTION
+- CALIBRATION ALGORITHM OPTIMIZATION
+- REDUCE JITTER

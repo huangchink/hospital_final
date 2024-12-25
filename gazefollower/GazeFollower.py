@@ -249,12 +249,18 @@ class GazeFollower:
             screen = pygame.display.set_mode(self.screen_size.tolist(), pygame.FULLSCREEN)
             pygame.display.set_caption("Calibration UI")
 
-        self.camera.start_calibrating()
-        cali_user_response = self.calibration_ui.draw(screen)
-        self.camera.stop_calibrating()
-        self._drop_last_three_frames()
-        fitness = self.calibration.calibrate(self.gaze_feature_collection, self.ground_truth_points)
-        is_saved = self.calibration.save_model()
+        while True:
+            self.gaze_feature_collection = []
+            self.ground_truth_points = []
+            self.camera.start_calibrating()
+            cali_user_response = self.calibration_ui.draw(screen)
+            self.camera.stop_calibrating()
+            self._drop_last_three_frames()
+            fitness = self.calibration.calibrate(self.gaze_feature_collection, self.ground_truth_points)
+            is_saved = self.calibration.save_model()
+            fitness *= np.sqrt(self.screen_size[0] ** 2 + self.screen_size[1] ** 2)
+            if self.calibration_ui.draw_calibration_result(screen, fitness, is_saved):
+                break
 
         if validation_percentage_points is not None:
             self.set_validation_percentage_points(validation_percentage_points)

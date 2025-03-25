@@ -4,5 +4,3 @@
 
 from .CameraPreviewerUI import CameraPreviewerUI
 from .CalibrationUI import CalibrationUI
-from .CalibrationResultUI import CalibrationResultUI
-

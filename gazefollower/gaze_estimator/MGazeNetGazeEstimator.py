@@ -71,6 +71,7 @@ class MGazeNetGazeEstimator(GazeEstimator):
         :return: An instance of GazeInfo containing estimated gaze direction and related features.
         """
         gaze_info = GazeInfo()
+        gaze_info.timestamp = face_info.timestamp
 
         # Check if face is detected
         if not face_info.status:

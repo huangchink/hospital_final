@@ -4,3 +4,4 @@
 
 from .Calibration import Calibration
 from .SVRCalibration import SVRCalibration
+from .CalibrationController import CalibrationController

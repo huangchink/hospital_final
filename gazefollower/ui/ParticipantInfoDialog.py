@@ -3,8 +3,8 @@ from tkinter import ttk
 
 
 class ParticipantInfoDialog:
-    def __init__(self, root):
-        self.root = root
+    def __init__(self, root_):
+        self.root = root_
         self.root.title("Participant Information")
 
         # Variables to store the inputs
@@ -40,10 +40,11 @@ class ParticipantInfoDialog:
         combo_gender.grid(row=2, column=1, columnspan=2, padx=20, pady=15, sticky="ew")
         combo_gender.current(0)  # Default to "Male"
 
-        # Glasses Label and Combobox
+        # Glasses Label and ComboboxZ
         label_glasses = ttk.Label(self.root, text="Wears Glasses:", font=("Microsoft YaHei", 14))
         label_glasses.grid(row=3, column=0, padx=20, pady=15, sticky="w")
-        combo_glasses = ttk.Combobox(self.root, textvariable=self.glasses, state="readonly", font=("Microsoft YaHei", 14))
+        combo_glasses = ttk.Combobox(self.root, textvariable=self.glasses,
+                                     state="readonly", font=("Microsoft YaHei", 14))
         combo_glasses['values'] = ("0", "1")
         combo_glasses.grid(row=3, column=1, columnspan=2, padx=20, pady=15, sticky="ew")
         combo_glasses.current(1)  # Default to "No"

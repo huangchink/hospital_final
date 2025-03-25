@@ -11,7 +11,9 @@ class GazeInfo:
 
     Attributes:
         features (np.array): The features extracted from the gaze estimation model.
-        gaze_coordinates (np.array): The x, y coordinates of the gaze point.
+        raw_gaze_coordinates (np.array): The x, y coordinates of the raw gaze point.
+        calibrated_gaze_coordinates (np.array): The x, y coordinates of the calibrated gaze point.
+        filtered_gaze_coordinates (np.array): The x, y coordinates of the filtered gaze point.
         left_openness (float): The openness of the left eye.
         right_openness (float): The openness of the right eye.
         event (EyeMovementEvent): The type of eye movement event.

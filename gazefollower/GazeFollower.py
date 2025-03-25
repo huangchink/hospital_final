@@ -1,7 +1,6 @@
 # _*_ coding: utf-8 _*_
 # Author: GC Zhu
 # Email: zhugc2016@gmail.com
-import copy
 import datetime
 import pathlib
 import re
@@ -11,9 +10,8 @@ import threading
 import cv2
 import numpy as np
 import pygame
-from screeninfo import get_monitors
 
-from .calibration import Calibration
+from .calibration import Calibration, CalibrationController
 from .calibration import SVRCalibration
 from .camera import Camera
 from .camera import WebCamCamera
@@ -21,127 +19,73 @@ from .face_alignment import FaceAlignment
 from .face_alignment import MediaPipeFaceAlignment
 from .filter import HeuristicFilter
 from .filter.Filter import Filter
-from .gaze_estimator import GazeEstimator
-from .gaze_estimator import MGazeNetGazeEstimator
+from .gaze_estimator import GazeEstimator, MGazeNetGazeEstimator
 from .logger import Log
-from .misc import CameraRunningState, clip_patch, GazeInfo
+from .misc import CameraRunningState, clip_patch, GazeInfo, DefaultConfig
 from .ui import CameraPreviewerUI, CalibrationUI
 
 
 class GazeFollower:
 
-    def __init__(self, pipeline=None):
+    def __init__(self, camera: Camera = WebCamCamera(),
+                 face_alignment: FaceAlignment = MediaPipeFaceAlignment(),
+                 gaze_estimator: GazeEstimator = MGazeNetGazeEstimator(),
+                 gaze_filter: Filter = HeuristicFilter(),
+                 calibration: Calibration = SVRCalibration(),
+                 config: DefaultConfig = DefaultConfig()):
         """
-        Initializes the UniTracker instance with a specified pipeline for gaze tracking.
+        Initializes the main components of the eye-tracking system.
 
-        :param pipeline: dict (optional)
-            A dictionary that specifies components for the gaze tracking pipeline.
-            If None, a default pipeline will be created with the following components:
-                - WebCamCamera for capturing images.
-                - MediaPipeFaceAlignment for detecting and aligning faces.
-                - MGazeNetGazeEstimator for estimating gaze direction.
-                - HeuristicFilter for filtering gaze estimates.
-                - SVRCalibration for calibrating the gaze estimation.
+        Parameters:
+        camera (Camera): The camera object, default is WebCamCamera.
+        face_alignment (FaceAlignment): The face alignment module, default is MediaPipeFaceAlignment.
+        gaze_estimator (GazeEstimator): The gaze estimation module, default is GazeEstimator.
+        gaze_filter (Filter): The gaze filter for smoothing estimation results, default is HeuristicFilter.
+        calibration (Calibration): The gaze calibration module, default is SVRCalibration.
         """
         self._create_session("my_session")
-        if pipeline is None:
-            # Create a default pipeline with specified components
-            default_pipeline = {
-                "camera": WebCamCamera(),
-                "face_alignment": MediaPipeFaceAlignment(),
-                "gaze_estimator": MGazeNetGazeEstimator(),
-                "filter": HeuristicFilter(look_ahead=2),
-                "calibration": SVRCalibration(),
-            }
-            self.pipeline = default_pipeline
-        else:
-            self.pipeline = pipeline
 
-        # Assign the pipeline components to instance variables
-        self.camera: Camera = self.pipeline["camera"]
-        self.face_alignment: FaceAlignment = self.pipeline["face_alignment"]
-        self.gaze_estimator: GazeEstimator = self.pipeline["gaze_estimator"]
-        self.filter: Filter = self.pipeline["filter"]
-        self.calibration: Calibration = self.pipeline["calibration"]
+        # eye tracking components
+        self.camera: Camera = camera
+        self.face_alignment: FaceAlignment = face_alignment
+        self.gaze_estimator: GazeEstimator = gaze_estimator
+        self.gaze_filter: Filter = gaze_filter
+        self.calibration: Calibration = calibration
 
-        # open camera
-        self.camera.open()
+        # default config
+        self.config: DefaultConfig = config
 
-        # Set the camera to call process_frame method when a new image is captured
+        # set the camera to call process_frame method when a new image is captured
         self.camera.set_on_image_callback(self.process_frame)
 
-        # Define the camera position relative to the screen
-        self.camera_position = (17.15, -0.68)
-
-        # Get monitor details and set the screen size
-        self.monitors = get_monitors()
-        self.screen_size = np.array([self.monitors[0].width, self.monitors[0].height])
-
-        # Define calibration points as percentage coordinates on the screen
-        self.calibration_percentage_points = (
-            (0.5, 0.5),  # Center
-            (0.5, 0.08),  # Top center
-            (0.08, 0.5),  # Left center
-            (0.92, 0.5),  # Right center
-            (0.5, 0.92),  # Bottom center
-            (0.08, 0.08),  # Top left corner
-            (0.92, 0.08),  # Top right corner
-            (0.08, 0.92),  # Bottom left corner
-            (0.92, 0.92),  # Bottom right corner
-            (0.25, 0.25),  # Inner top left
-            (0.75, 0.25),  # Inner top right
-            (0.25, 0.75),  # Inner bottom left
-            (0.75, 0.75),  # Inner bottom right
-            (0.5, 0.5)  # Center
-        )
-
-        # Create a deep copy of calibration points for validation purposes
-        self.validation_percentage_points = copy.deepcopy(self.calibration_percentage_points)
-        # Lock for synchronizing access to shared resources among threads
+        # lock for synchronizing access to shared resources among threads
         self.subscriber_lock = threading.Lock()
-        # List to hold subscribers for the sampling events
+
+        # list to hold subscribers for the sampling events
         self.subscribers = []
 
+        # trigger variable
         self._trigger = 0
 
+        # screen size
+        self.screen_size = config.screen_size
+
+        # ui instance
         self.calibration_ui = None
         self.camera_previewer_ui = None
+        self._calibration_controller: CalibrationController = CalibrationController(config.cali_mode,
+                                                                                    config.camera_position,
+                                                                                    self.screen_size,
+                                                                                    config.screen_physical_size,
+                                                                                    self.config.eye_blink_threshold)
 
-    def set_calibration_percentage_points(self, calibration_percentage_points):
+        self._gaze_info = None
+
+    def get_gaze_info(self) -> GazeInfo | None:
         """
-        Sets the calibration percentage points for gaze estimation calibration
-        and updates the calibration UI with the new points.
-
-        :param calibration_percentage_points: tuple
-            A sequence of tuples representing percentage coordinates for calibration
-            points on the screen. Each tuple should contain two float values
-            representing the x and y coordinates, where (0, 0) is the top-left
-            corner and (1, 1) is the bottom-right corner of the screen.
-
-        :return: None
-            This method does not return any value. It updates the internal state
-            of the object and the UI.
+        Returns the gaze information of the eye-tracking system.
         """
-        self.calibration_percentage_points = calibration_percentage_points
-        self.calibration_ui.set_calibration_points(calibration_percentage_points)
-
-    def set_validation_percentage_points(self, validation_percentage_points):
-        """
-        Sets the validation percentage points for gaze estimation validation
-        and updates the calibration UI with the new points.
-
-        :param validation_percentage_points: tuple
-            A sequence of tuples representing percentage coordinates for validation
-            points on the screen. Each tuple should contain two float values
-            representing the x and y coordinates, where (0, 0) is the top-left
-            corner and (1, 1) is the bottom-right corner of the screen.
-
-        :return: None
-            This method does not return any value. It updates the internal state
-            of the object and the UI.
-        """
-        self.validation_percentage_points = validation_percentage_points
-        self.calibration_ui.set_validation_points(validation_percentage_points)
+        return self._gaze_info
 
     def add_subscriber(self, subscriber_fuc, args=(), kwargs=None):
         """
@@ -200,77 +144,90 @@ class GazeFollower:
     def send_trigger(self, trigger_num: int):
         self._trigger = trigger_num
 
-    def preview(self, screen: pygame.surface = None):
+    @staticmethod
+    def backend_name(screen):
         """
-        Starts the camera preview and displays it in a Pygame window.
+        Determines the backend type based on the given screen instance.
 
-        This method initializes the Pygame display, sets the window title,
-        and draws the camera preview UI on the screen. After displaying the
-        preview, it stops the camera preview.
+        Parameters:
+            screen: The screen instance, which can be either a pygame Surface or a PsychoPy Window.
 
-        :return: None
-            This method does not return any value.
+        Returns:
+            str: The backend name, either 'pygame' or 'psychopy'.
+
+        Raises:
+            Exception: If the screen is None or not a valid pygame or PsychoPy window instance.
         """
-        if screen is None:
+        from pygame import Surface
+        screen_type = ""
+        if isinstance(screen, Surface):
+            screen_type = 'pygame'
+        else:
+            from psychopy.visual import Window
+            if isinstance(screen, Window):
+                screen_type = 'psychopy'
+
+        if screen_type == "":
+            raise Exception("Screen cannot be None. Please pass pygame window or psychopy window instance")
+        return screen_type
+
+    def preview(self, win=None):
+        """
+        Starts the camera preview and displays images.
+
+        Parameters:
+            win (None|pygame.Surface|psychopy.visual.Window): The pygame window or psychopy window.
+                If you pass None, the default pygame window will be used.
+        """
+        if win is None:
             pygame.init()
-            screen = pygame.display.set_mode(self.screen_size.tolist(), pygame.FULLSCREEN)
-        self.camera_previewer_ui = CameraPreviewerUI()
+            win = pygame.display.set_mode(self.screen_size.tolist(), pygame.FULLSCREEN)
+            pygame.display.set_caption("Calibration UI")
+            backend_name = "pygame"
+        else:
+            backend_name = self.backend_name(win)
+
+        self.camera_previewer_ui = CameraPreviewerUI(win=win, backend_name=backend_name)
         self.camera.start_previewing()
-        self.camera_previewer_ui.draw(screen)
+        self.camera_previewer_ui.draw()
         self.camera.stop_previewing()
 
-    def calibrate(self, screen: pygame.Surface = None, validation=True, validation_percentage_points=None):
+    def calibrate(self, win=None):
         """
         Initiates a calibration session for gaze estimation and optionally validates
         the calibration with provided validation points.
 
-        :param screen: pygame.Surface
-
-        :param validation: bool (default=True)
-            Indicates whether to perform validation after calibration. If True,
-            the method will start a validation sampling session.
-
-        :param validation_percentage_points: tuple (optional)
-            A sequence of tuples representing percentage coordinates for validation
-            points on the screen. If provided, these points will be used for
-            validation after calibration.
-
-        :return: None
-            This method does not return any value. It modifies the internal state
-            of the object based on calibration and validation results.
+        Parameters:
+            win (None|pygame.Surface|psychopy.visual.Window): The pygame window or psychopy window.
+                If you pass None, the default pygame window will be used.
         """
-        self._new_calibration_session()
-        self.calibration_ui = CalibrationUI(camera_position=self.camera_position,
-                                            screen_size=self.screen_size,
-                                            calibration_percentage_points=self.calibration_percentage_points,
-                                            validation_percentage_points=self.validation_percentage_points)
-        if screen is None:
+
+        if win is None:
             pygame.init()
-            screen = pygame.display.set_mode(self.screen_size.tolist(), pygame.FULLSCREEN)
+            win = pygame.display.set_mode(self.screen_size.tolist(), pygame.FULLSCREEN)
             pygame.display.set_caption("Calibration UI")
+            backend_name = "pygame"
+        else:
+            backend_name = self.backend_name(win)
 
-        while True:
-            self.gaze_feature_collection = []
-            self.ground_truth_points = []
+        self.calibration_ui = CalibrationUI(win=win, backend_name=backend_name)
+        while 1:
+            # new session
+            self._new_calibration_session()
+            self._calibration_controller.new_session()
+            self.calibration_ui.new_session()
+            # draw guidance
+            self.calibration_ui.draw_guidance(self.config.cali_instruction)
+            # start calibration
             self.camera.start_calibrating()
-            cali_user_response = self.calibration_ui.draw(screen)
+            # draw calibration points
+            self.calibration_ui.draw(self._calibration_controller)
+            user_response = self.calibration_ui.draw_cali_result(self._calibration_controller,
+                                                                 self.config.model_fit_instruction)
             self.camera.stop_calibrating()
-            self._drop_last_three_frames()
-            fitness = self.calibration.calibrate(self.gaze_feature_collection, self.ground_truth_points)
-            is_saved = self.calibration.save_model()
-            fitness *= np.sqrt(self.screen_size[0] ** 2 + self.screen_size[1] ** 2)
-            if self.calibration_ui.draw_calibration_result(screen, fitness, is_saved):
+
+            if user_response:
                 break
-
-        if validation_percentage_points is not None:
-            self.set_validation_percentage_points(validation_percentage_points)
-
-        if validation:
-            self.camera.start_sampling()
-            self.add_subscriber(self.calibration_ui.validation_sample_subscriber)
-            vali_user_response = self.calibration_ui.draw(screen, draw_type="validation")
-            self.camera.stop_sampling()
-            self.remove_subscriber(self.calibration_ui.validation_sample_subscriber)
 
     def _new_calibration_session(self):
         """
@@ -326,7 +283,7 @@ class GazeFollower:
 
     def process_frame(self, state, timestamp, frame):
         """
-        Processes the received frame by ensuring it is in RGB format and resizing it to 640x480.
+        Processes the received frame.
 
         :param state: camera state
         :param timestamp: long, the timestamp when the frame was captured.
@@ -335,74 +292,86 @@ class GazeFollower:
         """
         if state == CameraRunningState.PREVIEWING:
             # face detection
-            # face patch, eye patches
             face_info = self.face_alignment.detect(timestamp, frame)
             face_patch, left_eye_patch, right_eye_patch = None, None, None
+
             if face_info.status and face_info.can_gaze_estimation:
+                # clip face and eye patches
                 face_patch = clip_patch(frame, face_info.face_rect)
                 left_eye_patch = clip_patch(frame, face_info.left_rect)
                 right_eye_patch = clip_patch(frame, face_info.right_rect)
 
+                # draw left eye rectangle on the image frame
                 x, y, w, h = face_info.left_rect
                 cv2.rectangle(frame, (x, y), (x + w, y + h),
                               color=(255, 0, 0), thickness=2)
-
+                # draw right eye rectangle on the image frame
                 x, y, w, h = face_info.right_rect
                 cv2.rectangle(frame, (x, y), (x + w, y + h),
                               color=(0, 0, 255), thickness=2)
-
+                # draw eye rectangles on the face patch
                 fx, fy, fw, fh = face_info.face_rect
                 lx, ly, lw, lh = face_info.left_rect
                 relative_left_x = lx - fx
                 relative_left_y = ly - fy
                 cv2.rectangle(face_patch, (relative_left_x, relative_left_y),
                               (relative_left_x + lw, relative_left_y + lh), color=(255, 0, 0), thickness=2)
-
                 rx, ry, rw, rh = face_info.right_rect
                 relative_right_x = rx - fx
                 relative_right_y = ry - fy
                 cv2.rectangle(face_patch, (relative_right_x, relative_right_y),
                               (relative_right_x + rw, relative_right_y + rh), color=(0, 0, 255), thickness=2)
-
+            # send the image frame to the screen
             self.camera_previewer_ui.update_images(frame, face_patch, left_eye_patch, right_eye_patch)
             self.camera_previewer_ui.face_info_dict = face_info.to_dict()
 
         elif state == CameraRunningState.SAMPLING:
+            # detect face
             face_info = self.face_alignment.detect(timestamp, frame)
+            # detect gaze
             gaze_info = self.gaze_estimator.detect(frame, face_info)
+
             if gaze_info.status and gaze_info.features is not None:
                 calibrated, calibrated_gaze_coordinates = self.calibration.predict(gaze_info.features,
                                                                                    gaze_info.raw_gaze_coordinates)
-                # scale to pixel
-                if calibrated:
-                    calibrated_gaze_coordinates *= self.screen_size
 
-                gaze_info.calibrated_gaze_coordinates = calibrated_gaze_coordinates
+                if not calibrated:
+                    Log.e("No calibration model is available, please perform calibration")
+                    raise Exception("No calibration model is available, please perform calibration")
+                else:
+                    # scale to pixel
+                    calibrated_gaze_coordinates = self._calibration_controller.convert_to_pixel(
+                        calibrated_gaze_coordinates)
+                    gaze_info.calibrated_gaze_coordinates = calibrated_gaze_coordinates
+
                 # do filter
-                filtered_gaze_coordinates = self.filter.filter_values(calibrated_gaze_coordinates)
-
+                filtered_gaze_coordinates = self.gaze_filter.filter_values(calibrated_gaze_coordinates)
                 gaze_info.filtered_gaze_coordinates = filtered_gaze_coordinates
-
             self.dispatch_face_gaze_info(face_info, gaze_info)
 
         elif state == CameraRunningState.CALIBRATING:
-            if self.calibration_ui.point_showing:
+            if self._calibration_controller.calibrating:
                 face_info = self.face_alignment.detect(timestamp, frame)
                 gaze_info = self.gaze_estimator.detect(frame, face_info)
-                current_point_index = self.calibration_ui.current_point_index
-                if current_point_index >= len(self.calibration_ui.calibration_points):
-                    return
-                # Collect data
-                ground_truth_point = self.calibration_ui.calibration_points[current_point_index]
-                # Normalized the ground truth point
-                ground_truth_point = np.array(ground_truth_point) / self.screen_size
-                # ground_truth_point_cm = self.pixel_to_cm(self.camera_position, ground_truth_point_pixel)
-                if (self.calibration_ui.point_elapsed_time > 0.5 and gaze_info.features is not None
-                        and gaze_info.left_openness > 20 and gaze_info.right_openness > 20):
-                    self.gaze_feature_collection.append(gaze_info.features)
-                    # self.estimated_gaze_points.append(gaze_info.gaze_coordinates)
-                    self.ground_truth_points.append(ground_truth_point)
-                    self.point_id_collection.append(current_point_index)
+                self._calibration_controller.add_cali_feature(gaze_info=gaze_info, face_info=face_info)
+            elif not self._calibration_controller.cali_model_fitted:
+                features = np.array(self._calibration_controller.feature_vectors)
+                n_point, n_frame, feature_dim = features.shape
+                features = np.reshape(features, (n_point * n_frame, feature_dim))
+
+                labels = np.array(self._calibration_controller.label_vectors)
+                n_point, n_frame, label_dim = labels.shape
+                labels = np.reshape(labels, (n_point * n_frame, label_dim))
+                ids = np.array(self._calibration_controller.feature_ids)
+                n_point, n_frame, ids_dim = ids.shape
+                point_ids = np.reshape(ids, (n_point * n_frame, ids_dim))
+
+                has_calibrated, mean_euclidean_error, predictions \
+                    = self.calibration.calibrate(features, labels, point_ids)
+
+                self._calibration_controller.set_calibration_results(has_calibrated, mean_euclidean_error, labels,
+                                                                     predictions)
+                self._calibration_controller.cali_model_fitted = True
 
         elif state == CameraRunningState.CLOSING:
             # Do nothing
@@ -438,8 +407,11 @@ class GazeFollower:
 
         :return: None
         """
-        for component in self.pipeline.values():
-            component.release()
+        self.camera.release()
+        self.gaze_filter.release()
+        self.gaze_estimator.release()
+        self.face_alignment.release()
+        self.calibration.release()
 
     @staticmethod
     def _gaze_info_2_string(gaze_info: GazeInfo, trigger):
@@ -447,6 +419,7 @@ class GazeFollower:
         timestamp,gaze_position_x,gaze_position_y,left_eye_openness,
         right_eye_openness,tracking_status,status,event,trigger\n
         """
+
         ret_str = (f"{gaze_info.timestamp},{gaze_info.raw_gaze_coordinates[0]},{gaze_info.raw_gaze_coordinates[1]},"
                    f"{gaze_info.calibrated_gaze_coordinates[0]},{gaze_info.calibrated_gaze_coordinates[1]},"
                    f"{gaze_info.filtered_gaze_coordinates[0]},{gaze_info.filtered_gaze_coordinates[1]},"
@@ -458,6 +431,8 @@ class GazeFollower:
         """
         Write the sample data.
         """
+        _ = face_info
+        self._gaze_info = gaze_info
         tmp_trigger = 0
         if isinstance(self._trigger, int):
             if self._trigger != 0:
@@ -518,6 +493,6 @@ class GazeFollower:
             "right_eye_openness,tracking_status,status,event,trigger\n"
         )
 
-    def finetuning(self):
+    def fine_tuning(self):
         Log.w("Finetuning is awaiting author's updating. Coming soon.")
         raise NotImplementedError("Finetuning feature is under development.")

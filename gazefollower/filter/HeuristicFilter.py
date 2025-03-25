@@ -14,7 +14,7 @@ class HeuristicFilter(Filter):
     based on comparisons with neighboring values.
     """
 
-    def __init__(self, look_ahead):
+    def __init__(self, look_ahead=3):
         """
         Initialize the HeuristicFilter with a specified look-ahead value.
 
@@ -23,8 +23,8 @@ class HeuristicFilter(Filter):
         super().__init__()
         self.raw_x = []  # List to store raw x values
         self.raw_y = []  # List to store raw y values
-        self.dummy_x = np.nan # Smoothed x value
-        self.dummy_y = np.nan # Smoothed y value
+        self.dummy_x = np.nan  # Smoothed x value
+        self.dummy_y = np.nan  # Smoothed y value
         self.look_ahead = look_ahead  # Number of values to look ahead
 
     def filter_values(self, values, timestamp=-1):

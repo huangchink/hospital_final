@@ -32,7 +32,7 @@ class Camera:
         """
         if self.camera_running_state == CameraRunningState.CLOSING:
             self.camera_running_state = CameraRunningState.SAMPLING
-            # self.open()
+            self.open()
         elif self.camera_running_state in {CameraRunningState.PREVIEWING, CameraRunningState.CALIBRATING}:
             raise RuntimeError("It is under previewing or calibration and cannot start sampling")
         else:
@@ -45,12 +45,12 @@ class Camera:
         Raises an error if the camera is in an incompatible state.
         """
         if self.camera_running_state == CameraRunningState.SAMPLING:
-            # self.close()
+            self.close()
             self.camera_running_state = CameraRunningState.CLOSING
         elif self.camera_running_state in {CameraRunningState.PREVIEWING, CameraRunningState.CALIBRATING}:
             raise RuntimeError("It is under previewing or calibration and cannot stop sampling")
         else:
-            print("It has already stopped sampling")
+            print("Please do not call stop_sampling repeatedly")
 
     def start_previewing(self):
         """
@@ -60,7 +60,7 @@ class Camera:
         """
         if self.camera_running_state == CameraRunningState.CLOSING:
             self.camera_running_state = CameraRunningState.PREVIEWING
-            # self.open()
+            self.open()
         elif self.camera_running_state in {CameraRunningState.SAMPLING, CameraRunningState.CALIBRATING}:
             raise RuntimeError("It is under sampling or calibrating and cannot start previewing")
         else:
@@ -74,7 +74,7 @@ class Camera:
         """
         if self.camera_running_state == CameraRunningState.PREVIEWING:
             self.camera_running_state = CameraRunningState.CLOSING
-            # self.close()
+            self.close()
         elif self.camera_running_state in {CameraRunningState.SAMPLING, CameraRunningState.CALIBRATING}:
             raise RuntimeError("It is under sampling or calibrating and cannot stop previewing")
         else:
@@ -88,7 +88,7 @@ class Camera:
         """
         if self.camera_running_state == CameraRunningState.CLOSING:
             self.camera_running_state = CameraRunningState.CALIBRATING
-            # self.open()
+            self.open()
         elif self.camera_running_state in {CameraRunningState.SAMPLING, CameraRunningState.PREVIEWING}:
             raise RuntimeError("It is under sampling or previewing and cannot start calibrating")
         else:
@@ -102,7 +102,7 @@ class Camera:
         """
         if self.camera_running_state == CameraRunningState.CALIBRATING:
             self.camera_running_state = CameraRunningState.CLOSING
-            # self.close()
+            self.close()
         elif self.camera_running_state in {CameraRunningState.SAMPLING, CameraRunningState.PREVIEWING}:
             raise RuntimeError("It is under sampling or previewing and cannot stop calibrating")
         else:

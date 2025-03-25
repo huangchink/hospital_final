@@ -46,6 +46,7 @@ Here's a basic example of how to use GazeFollower:
 ```python
 # _*_ coding: utf-8 _*_
 
+import pygame
 from gazefollower import GazeFollower
 gaze_follower = GazeFollower()
 
@@ -53,13 +54,16 @@ gaze_follower.preview()
 gaze_follower.calibrate()
 
 gaze_follower.start_sampling()
-# your experiment code
+# your experiment code here
 gaze_follower.send_trigger(10)
-# your experiment code
+pygame.time.wait(5)
+# your experiment code here
 gaze_follower.stop_sampling()
 gaze_follower.save_data("demo.csv")
 gaze_follower.release()
 ```
+
+More detailed usage information can be found [here](MORE_INFO.md).
 
 ## Note
 
@@ -95,6 +99,7 @@ The work is provided "as-is" without any warranties, express or implied, includi
 
 # NEED TO IMPLEMENTATION
 
-- BLINK DETECTION
-- CALIBRATION ALGORITHM OPTIMIZATION
-- REDUCE JITTER
+- Blink Detection
+- Event Detection
+- Calibration Optimization
+- Reduce Jitter

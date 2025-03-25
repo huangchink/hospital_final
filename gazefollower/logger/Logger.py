@@ -3,21 +3,13 @@ import threading
 
 
 class Log:
-    _instance = None
+    instance = None
     _lock = threading.Lock()
-
-    # def __new__(cls):
-    #     if not cls._instance:
-    #         with cls._lock:
-    #             if not cls._instance:
-    #                 cls._instance = super().__new__(cls)
-    #                 cls._instance._logger = None
-    #     return cls._instance
 
     @classmethod
     def init(cls, log_file_path):
-        cls._instance = cls()
-        cls._instance._logger = cls._create_logger(log_file_path)
+        cls.instance = cls()
+        cls.instance.logger = cls._create_logger(log_file_path)
 
     @staticmethod
     def _create_logger(log_file_path):
@@ -47,24 +39,24 @@ class Log:
     @classmethod
     def i(cls, message):
         cls._check_logger()
-        cls._instance._logger.info(message)
+        cls.instance.logger.info(message)
 
     @classmethod
     def d(cls, message):
         cls._check_logger()
-        cls._instance._logger.debug(message)
+        cls.instance.logger.debug(message)
 
     @classmethod
     def w(cls, message):
         cls._check_logger()
-        cls._instance._logger.warning(message)
+        cls.instance.logger.warning(message)
 
     @classmethod
     def e(cls, message):
         cls._check_logger()
-        cls._instance._logger.error(message)
+        cls.instance.logger.error(message)
 
     @classmethod
     def _check_logger(cls):
-        if cls._instance is None or cls._instance._logger is None:
+        if cls.instance is None or cls.instance.logger is None:
             raise Exception("Logger has not been initialized. Please call Log.init() first.")

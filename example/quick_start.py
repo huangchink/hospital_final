@@ -13,7 +13,7 @@ gaze_follower.calibrate()
 gaze_follower.start_sampling()
 # your experiment code
 gaze_follower.send_trigger(10)
-pygame.time.wait(2)
+pygame.time.wait(5)
 # your experiment code
 gaze_follower.stop_sampling()
 

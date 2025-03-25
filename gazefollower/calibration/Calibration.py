@@ -2,7 +2,9 @@
 # Author: GC Zhu
 # Email: zhugc2016@gmail.com
 
-from typing import List
+from typing import List, Tuple, Any
+
+from numpy import ndarray
 
 
 class Calibration:
@@ -17,7 +19,8 @@ class Calibration:
         """
         self.has_calibrated = False
 
-    def calibrate(self, features, labels) -> float:
+    def calibrate(self, features, labels, ids=None) -> \
+            Tuple[bool, float, ndarray] | Tuple[bool, float, Any]:
         """
         Calibrates the model using the provided features and labels.
 
@@ -31,11 +34,16 @@ class Calibration:
             The target labels corresponding to the input features, where n is the number 
             of samples. Each label should have two components.
 
+        ids: array-like of shape (n, 1)
+        `   The ids corresponding to the input features, where n is the number of samples
         Returns:
         -------
+        bool
+            whether calibrated
         float
-            The fitness score of the calibration, indicating how well the model has 
-            been calibrated using the provided data.
+            mean Euclidean error
+        nparray | Any
+            labels, array-like of shape (n, 2)
         """
         # Implementation goes here
         raise NotImplementedError("Subclasses must implement this method.")
@@ -51,7 +59,7 @@ class Calibration:
         """
         raise NotImplementedError("Subclasses must implement this method.")
 
-    def predict(self, features, estimated_coordinate) -> List:
+    def predict(self, features, estimated_coordinate) -> Tuple:
         """
         Predicts the target labels for the provided features using the calibration process.
         :param estimated_coordinate: estimated coordinates from the gaze estimation model.

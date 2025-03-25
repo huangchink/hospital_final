@@ -89,7 +89,6 @@ class FaceInfo:
 
         :return: A dictionary containing relevant face detection information.
         """
-        status_value = ""
 
         # Determine the status message based on detection results
         if not self.can_gaze_estimation and self.status:

@@ -3,10 +3,11 @@
 # Email: zhugc2016@gmail.com
 
 import pathlib
-from typing import List, Tuple
+from typing import Tuple, Any
 
 import cv2 as cv
 import numpy as np
+from numpy import ndarray
 
 from .Calibration import Calibration
 from ..logger import Log
@@ -43,10 +44,10 @@ class SVRCalibration(Calibration):
             self._set_svm_params(self.svr_y)
             self.has_calibrated = False
 
-    def _set_svm_params(self, svr):
+    @staticmethod
+    def _set_svm_params(svr):
         """
         Sets the default SVM parameters for the model.
-
         :param svr: The SVM model to set parameters for.
         """
         svr.setType(cv.ml.SVM_EPS_SVR)
@@ -82,18 +83,11 @@ class SVRCalibration(Calibration):
         # Return the predictions as a list
         return self.has_calibrated, (predicted_x, predicted_y)
 
-    def calibrate(self, features, labels) -> float:
-        """
-        Trains the SVM models using the provided features and labels, and calculates the mean Euclidean error.
-
-        :param features: np.array of shape (n, m), where n is the number of samples and m is the number of features.
-        :param labels: np.array of shape (n, 2), where n is the number of samples.
-                       The first column represents x labels, and the second column represents y labels.
-        :return: fitness (mean Euclidean distance)
-        """
+    def calibrate(self, features, labels, ids=None) \
+            -> Tuple[bool, float, ndarray] | Tuple[bool, float, Any]:
         # Ensure that features and labels are numpy arrays
-        features = np.array(features, dtype=np.float32)[:, :]  # 256-dimensional
-        labels = np.array(labels, dtype=np.float32)
+        features = features.astype(np.float32)
+        labels = labels.astype(np.float32)
 
         # Split labels into x and y components
         labels_x = labels[:, 0].reshape(-1, 1)  # Extract x labels
@@ -107,7 +101,7 @@ class SVRCalibration(Calibration):
         except Exception as e:
             self.has_calibrated = False
 
-            Log.d("Failed to train SVM model: {}".format(e.args))
+            Log.e("Failed to train SVM model: {}".format(e.args))
             Log.d("Try to delete previously trained model.")
             if self.svr_x_path.exists():
                 self.svr_x_path.unlink()  # Deletes svr_x.xml
@@ -121,20 +115,21 @@ class SVRCalibration(Calibration):
             else:
                 Log.d(f"No trained model found at {self.svr_y_path}")
 
-            return float('inf')  # Return infinity as fitness to indicate training failure
-
-        # Predict using the trained models
-        predicted_x = self.svr_x.predict(features)[1]
-        predicted_y = self.svr_y.predict(features)[1]
-
-        # Calculate the Euclidean distance between the predicted and actual labels
-        euclidean_distances = np.sqrt((labels_x - predicted_x) ** 2 + (labels_y - predicted_y) ** 2)
-
-        # Calculate the mean Euclidean error
-        mean_euclidean_error = np.mean(euclidean_distances)
-
-        Log.d(f"Calibration completed with mean Euclidean error: {mean_euclidean_error:.4f}")
-        return mean_euclidean_error
+        if self.has_calibrated:
+            # Predict using the trained models
+            predicted_x = self.svr_x.predict(features)[1]
+            predicted_y = self.svr_y.predict(features)[1]
+            # Calculate the Euclidean distance between the predicted and actual labels
+            euclidean_distances = np.sqrt((labels_x - predicted_x) ** 2 + (labels_y - predicted_y) ** 2)
+            # Calculate the mean Euclidean error
+            mean_euclidean_error = np.mean(euclidean_distances)
+            Log.d(f"Calibration completed with mean Euclidean error: {mean_euclidean_error:.4f}")
+            predicted_x.reshape(-1, 1)
+            predicted_y.reshape(-1, 1)
+            predictions = np.concatenate((predicted_x, predicted_y), axis=1)
+            return self.has_calibrated, mean_euclidean_error, predictions
+        else:
+            return self.has_calibrated, float('inf'), None,
 
     def save_model(self) -> bool:
         """

@@ -2,9 +2,9 @@
 # Author: GC Zhu
 # Email: zhugc2016@gmail.com
 
-_major_version = '0'
+_major_version = '1'
 _minor_version = '0'
-_patch_version = '5'
+_patch_version = '0'
 
 __version__ = f'{_major_version}.{_minor_version}.{_patch_version}'
 

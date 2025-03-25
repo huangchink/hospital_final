@@ -5,13 +5,24 @@
 
   <h1>GazeFollower</h1>
 
-  <b>An open-source gaze tracking system for web cameras</b><br/>
-  <i>Simple, Fast, Pythonic, Accurate</i><br/>
+<b>An open-source gaze tracking system for web cameras</b><br/>
+<i>Simple, Fast, Pythonic, Accurate</i><br/>
+
+<p>
+    <img src="https://img.shields.io/github/languages/top/ganchengzhu/gazefollower" alt="Top language">
+    <img src="https://img.shields.io/badge/python-3.11-blue" alt="Python 3.11">
+    <img src="https://img.shields.io/codacy/grade/e21ccd9e469d4b9abd69efeaaa587cc2" alt="Code quality">
+
+    <img src="https://img.shields.io/github/license/GanchengZhu/GazeFollower" alt="License">
+</p>
 </div>
 
 ## Introduction
 
-**GazeFollower** is a powerful and easy-to-use gaze tracking system designed specifically for use with web cameras. It offers an intuitive Python API, allowing developers and researchers to integrate gaze tracking into their projects with minimal setup. GazeFollower provides tools for real-time gaze tracking, calibration, and data recording, making it ideal for applications in psychology, usability testing, and more.
+**GazeFollower** is a powerful and easy-to-use gaze tracking system designed specifically for use with web cameras. It
+offers an intuitive Python API, allowing developers and researchers to integrate gaze tracking into their projects with
+minimal setup. GazeFollower provides tools for real-time gaze tracking, calibration, and data recording, making it ideal
+for applications in psychology, usability testing, and more.
 
 ## Features
 
@@ -38,7 +49,6 @@ cd GazeFollower
 python setup.py install
 ```
 
-
 ## Quick Start
 
 Here's a basic example of how to use GazeFollower:
@@ -48,6 +58,7 @@ Here's a basic example of how to use GazeFollower:
 
 import pygame
 from gazefollower import GazeFollower
+
 gaze_follower = GazeFollower()
 
 gaze_follower.preview()
@@ -67,11 +78,14 @@ More detailed usage information can be found [here](MORE_INFO.md).
 
 ## Note
 
-This depository only contains a model train on 7 million images. To gain access to the base model trained on 32 million images, please send an email to zhiguo@zju.edu.cn. Upon successful processing of your request, you will receive an email containing the model.
+This depository only contains a model train on 7 million images. To gain access to the base model trained on 32 million
+images, please send an email to zhiguo@zju.edu.cn. Upon successful processing of your request, you will receive an email
+containing the model.
 
 ### Email Prompt
 
 Here’s a template for your request email. Please keep the subject line unchanged:
+
 ```
 Subject: Request for Access to the Base Model Trained on 32 Million Images
 
@@ -91,11 +105,14 @@ Best regards,
 
 ## License Information
 
-This project is licensed under the [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)](https://creativecommons.org/licenses/by-nc-sa/4.0/). Please see LICENSE file.
+This project is licensed under
+the [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)](https://creativecommons.org/licenses/by-nc-sa/4.0/).
+Please see LICENSE file.
 
 ### Disclaimer
 
-The work is provided "as-is" without any warranties, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, or non-infringement.
+The work is provided "as-is" without any warranties, express or implied, including but not limited to the warranties of
+merchantability, fitness for a particular purpose, or non-infringement.
 
 # NEED TO IMPLEMENTATION
 

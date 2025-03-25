@@ -1,5 +1,5 @@
 mediapipe==0.10.5
-MNN==2.9.5
+MNN
 numpy
 opencv-python
 pandas

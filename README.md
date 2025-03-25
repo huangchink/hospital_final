@@ -12,8 +12,6 @@
     <img src="https://img.shields.io/github/languages/top/ganchengzhu/gazefollower" alt="Top language">
     <img src="https://img.shields.io/badge/python-3.11-blue" alt="Python 3.11">
     <img src="https://img.shields.io/codacy/grade/e21ccd9e469d4b9abd69efeaaa587cc2" alt="Code quality">
-
-    <img src="https://img.shields.io/github/license/GanchengZhu/GazeFollower" alt="License">
 </p>
 </div>
 

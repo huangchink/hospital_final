@@ -101,6 +101,30 @@ Best regards,
 [Your Name]
 ```
 
+### The Usage of The Base Model Trained on 32 Million Images
+
+```python
+import pygame
+from gazefollower import GazeFollower
+from gazefollower.gaze_estimator import MGazeNetGazeEstimator
+
+# The base model path need to pass here
+gaze_follower = GazeFollower(gaze_estimator=MGazeNetGazeEstimator(model_path='path to model'))
+
+gaze_follower.preview()
+gaze_follower.calibrate()
+
+gaze_follower.start_sampling()
+# your experiment code
+gaze_follower.send_trigger(10)
+pygame.time.wait(5)
+# your experiment code
+gaze_follower.stop_sampling()
+
+gaze_follower.save_data("demo.csv")
+gaze_follower.release()
+```
+
 ## License Information
 
 This project is licensed under

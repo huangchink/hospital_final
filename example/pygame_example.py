@@ -40,7 +40,7 @@ if __name__ == '__main__':
 
         # now lets show the gaze point, press any key to close the window
         got_key = False
-        max_duration = 20000
+        max_duration = 20 * 1000 # 20 seconds
         t_start = pygame.time.get_ticks()
         pygame.event.clear()  # clear all cached events if there were any
         gx, gy = -65536, -65536

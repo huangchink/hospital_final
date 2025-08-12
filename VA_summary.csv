@@ -1,0 +1,10 @@
+freq,side,res,final_freq,va_score
+100,right,PASS,600.0,0.5
+200,right,FAIL,,
+100,left,PASS,,
+200,left,PASS,,
+300,right,PASS,,
+400,right,PASS,,
+500,left,PASS,,
+600,left,FAIL,,
+500,right,PASS,,

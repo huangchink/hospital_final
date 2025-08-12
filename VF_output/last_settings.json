@@ -1,0 +1,21 @@
+{
+  "user_name": "test_subject",
+  "goldmann_size": "Goldmann IV",
+  "calib_points": 9,
+  "stim_points": 9,
+  "screen_width_cm": 52.704,
+  "viewing_distance_cm": 45.0,
+  "threshold_dist": 500,
+  "enable_rotation": false,
+  "rot_speed": 90.0,
+  "stim_path": "C:/Users/tchuang/hospital_final/hospital2/刺激源圖片選擇/ball.jpg",
+  "calib_dir": "C:/Users/tchuang/hospital_final/hospital2/calibration_profiles/test_subject_9pt_1920x1080",
+  "cali_img_path": "C:/Users/tchuang/hospital_final/hospital2/校正圖片選擇/妙蛙種子.png",
+  "cali_img_size": [
+    170,
+    170
+  ],
+  "gaze_color": "0,255,0",
+  "gaze_radius": 20,
+  "gaze_width": 2
+}

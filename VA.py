@@ -20,7 +20,10 @@ from tkinter import ttk, colorchooser, filedialog
 from pathlib import Path
 from gazefollower.calibration import SVRCalibration
 from gazefollower.logger import Log as GFLog
+import json
+from tkinter import messagebox
 
+LAST_SETTINGS_FILE = Path(__file__).resolve().parent / "VA_output" / "last_settings.json"
 
 
 def _profile_dir(cfg, W, H):
@@ -191,7 +194,7 @@ class SettingsWindow(tk.Tk):
         super().__init__()
         self.title("VA Test Settings")
         self.resizable(False, False)
-        self.geometry("1020x1600")
+        self.geometry("1020x1000")
 
         self.cali_img_path_var = tk.StringVar(value="")
         self.cali_img_w_var    = tk.IntVar(value=170)
@@ -366,22 +369,24 @@ class SettingsWindow(tk.Tk):
         self.rotate_var.trace_add("write", _toggle_rotate_controls)
         _toggle_rotate_controls()
 
-        # Staircase 參數（以 cpd）
-        ttk.Label(self, text="Staircase start (cpd):", font=LABEL_FONT).grid(row=r, sticky="w", **pad)
-        ttk.Spinbox(self, textvariable=self.start_cpd_var, from_=0.1, to=60.0,
-                    increment=0.1, width=10, font=ENTRY_FONT).grid(row=r, column=1, **pad); r += 1
+        # # Staircase 參數（以 cpd）
+        # ttk.Label(self, text="Staircase start (cpd):", font=LABEL_FONT).grid(row=r, sticky="w", **pad)
+        # ttk.Spinbox(self, textvariable=self.start_cpd_var, from_=0.1, to=60.0,
+        #             increment=0.1, width=10, font=ENTRY_FONT).grid(row=r, column=1, **pad); r += 1
 
-        ttk.Label(self, text="Staircase step (cpd):", font=LABEL_FONT).grid(row=r, sticky="w", **pad)
-        ttk.Spinbox(self, textvariable=self.step_cpd_var, from_=0.05, to=10.0,
-                    increment=0.05, width=10, font=ENTRY_FONT).grid(row=r, column=1, **pad); r += 1
+        # ttk.Label(self, text="Staircase step (cpd):", font=LABEL_FONT).grid(row=r, sticky="w", **pad)
+        # ttk.Spinbox(self, textvariable=self.step_cpd_var, from_=0.05, to=10.0,
+        #             increment=0.05, width=10, font=ENTRY_FONT).grid(row=r, column=1, **pad); r += 1
 
-        ttk.Label(self, text="Staircase min/max (cpd):", font=LABEL_FONT).grid(row=r, sticky="w", **pad)
-        frame_mm = ttk.Frame(self); frame_mm.grid(row=r, column=1, sticky="w", **pad)
-        ttk.Spinbox(frame_mm, textvariable=self.min_cpd_var, from_=0.01, to=60.0,
-                    increment=0.05, width=6, font=ENTRY_FONT).pack(side="left")
-        ttk.Label(frame_mm, text=" ~ ", font=LABEL_FONT).pack(side="left")
-        ttk.Spinbox(frame_mm, textvariable=self.max_cpd_var, from_=0.1, to=60.0,
-                    increment=0.5, width=6, font=ENTRY_FONT).pack(side="left")
+        # ttk.Label(self, text="Staircase min/max (cpd):", font=LABEL_FONT).grid(row=r, sticky="w", **pad)
+        # frame_mm = ttk.Frame(self); frame_mm.grid(row=r, column=1, sticky="w", **pad)
+        # ttk.Spinbox(frame_mm, textvariable=self.min_cpd_var, from_=0.01, to=60.0,
+        #             increment=0.05, width=6, font=ENTRY_FONT).pack(side="left")
+        # ttk.Label(frame_mm, text=" ~ ", font=LABEL_FONT).pack(side="left")
+        # ttk.Spinbox(frame_mm, textvariable=self.max_cpd_var, from_=0.1, to=60.0,
+        #             increment=0.5, width=6, font=ENTRY_FONT).pack(side="left")
+        # r += 1
+        ttk.Button(self, text="Use last settings", command=self.on_load_last).grid(row=r, columnspan=3, pady=6)
         r += 1
 
         ttk.Button(self, text="Start Test", command=self.on_start,
@@ -422,10 +427,10 @@ class SettingsWindow(tk.Tk):
             'view_distance_cm' : dist_cm,
             'screen_width_deg' : sw_deg,
             # Staircase（以 cpd）
-            'start_cpd': float(self.start_cpd_var.get()),
-            'step_cpd' : float(self.step_cpd_var.get()),
-            'min_cpd'  : float(self.min_cpd_var.get()),
-            'max_cpd'  : float(self.max_cpd_var.get()),
+            'start_cpd': float(2),
+            'step_cpd' : float(2),
+            'min_cpd'  : float(2),
+            'max_cpd'  : float(20),
             # 校正圖
             'cali_img_path': self.cali_img_path_var.get().strip(),
             'cali_img_size': (int(self.cali_img_w_var.get()), int(self.cali_img_h_var.get())),
@@ -436,7 +441,92 @@ class SettingsWindow(tk.Tk):
             # 外部 checkpoint 目錄（可選）
             'calib_dir': self.calib_dir_var.get().strip(),
         }
+        # 存成 last_settings.json，供下次「Use last settings」載入
+        try:
+            LAST_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(LAST_SETTINGS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self._collect_gui_values(), f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print("WARN: failed to save last settings:", e)
+
+
+
         self.destroy()
+    def _collect_gui_values(self):
+        """把目前 GUI 欄位採樣成 dict（原始 GUI 形態，方便存檔/還原）"""
+        return {
+            'user_name' : self.user_var.get(),
+            'calib_pts' : self.calib_var.get(),          # 字串 "5"/"9"/"13"
+            'stim_dur'  : float(self.stim_var.get()),
+            'blank_dur' : float(self.blank_var.get()),
+            'radius'    : int(self.rad_var.get()),
+            'thresh'    : float(self.thresh_var.get()),
+            'rotate'    : bool(self.rotate_var.get()),
+            'rot_speed' : float(self.rot_speed_var.get()),
+            'rot_dir'   : self.rot_dir_var.get(),        # "CW" / "CCW"
+            'color_light': self.color_light_var.get(),   # "r,g,b"
+            'color_dark' : self.color_dark_var.get(),
+            'bg_color'   : self.bg_color_var.get(),
+            'scr_width_cm' : float(self.scr_width_cm_var.get()),
+            'view_dist_cm' : float(self.view_dist_cm_var.get()),
+            'cali_img_path': self.cali_img_path_var.get(),
+            'cali_img_w'   : int(self.cali_img_w_var.get()),
+            'cali_img_h'   : int(self.cali_img_h_var.get()),
+            'gaze_color'   : self.gaze_color_var.get(),
+            'gaze_radius'  : int(self.gaze_radius_var.get()),
+            'gaze_width'   : int(self.gaze_width_var.get()),
+            'calib_dir'    : self.calib_dir_var.get(),
+            # 若你之後把 staircase 參數放回 GUI，也一起存：
+            'start_cpd' : float(self.start_cpd_var.get()),
+            'step_cpd'  : float(self.step_cpd_var.get()),
+            'min_cpd'   : float(self.min_cpd_var.get()),
+            'max_cpd'   : float(self.max_cpd_var.get()),
+        }
+
+    def _apply_gui_values(self, d: dict):
+        """把 dict 值塞回 GUI 欄位（載入上一次設定時用）"""
+        self.user_var.set(d.get('user_name', 'anonymous'))
+        self.calib_var.set(str(d.get('calib_pts', '5')))
+        self.stim_var.set(d.get('stim_dur', 5.0))
+        self.blank_var.set(d.get('blank_dur', 1.0))
+        self.rad_var.set(d.get('radius', 400))
+        self.thresh_var.set(d.get('thresh', 400.0))
+        self.rotate_var.set(d.get('rotate', False))
+        self.rot_speed_var.set(d.get('rot_speed', 1.0))
+        self.rot_dir_var.set(d.get('rot_dir', 'CW'))
+        self.color_light_var.set(d.get('color_light', '255,255,255'))
+        self.color_dark_var.set(d.get('color_dark', '0,0,0'))
+        self.bg_color_var.set(d.get('bg_color', '0,0,0'))
+        self.scr_width_cm_var.set(d.get('scr_width_cm', 53.0))
+        self.view_dist_cm_var.set(d.get('view_dist_cm', 120.0))
+        self.cali_img_path_var.set(d.get('cali_img_path', ''))
+        self.cali_img_w_var.set(d.get('cali_img_w', 170))
+        self.cali_img_h_var.set(d.get('cali_img_h', 170))
+        self.gaze_color_var.set(d.get('gaze_color', '0,255,0'))
+        self.gaze_radius_var.set(d.get('gaze_radius', 30))
+        self.gaze_width_var.set(d.get('gaze_width', 4))
+        self.calib_dir_var.set(d.get('calib_dir', ''))
+        # staircase
+        self.start_cpd_var.set(d.get('start_cpd', 2.0))
+        self.step_cpd_var.set(d.get('step_cpd', 2.0))
+        self.min_cpd_var.set(d.get('min_cpd', 1.0))
+        self.max_cpd_var.set(d.get('max_cpd', 20.0))
+
+    def on_load_last(self):
+        """讀取 VA_output/last_settings.json 並填回 GUI"""
+        try:
+            LAST_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            if not LAST_SETTINGS_FILE.exists():
+                messagebox.showinfo("Info", "No previous settings found.")
+                return
+            with open(LAST_SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            self._apply_gui_values(data)
+            messagebox.showinfo("Loaded", f"Loaded last settings from:\n{LAST_SETTINGS_FILE}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load last settings:\n{e}")
+
+
 
 # ---------- 主實驗 ----------
 def run_test(cfg):
@@ -464,7 +554,8 @@ def run_test(cfg):
     # 建立校正器並交給 GazeFollower
     calib = SVRCalibration(model_save_path=str(profile_dir))
     gf = GazeFollower(config=dcfg, calibration=calib)
-
+    if not cfg.get('calib_dir'):
+        gf.calibration.has_calibrated = False
     # 預覽 & 校正流程：有檔就跳過；沒檔就跑一次並儲存
     prep_input_for_calibration()
     ensure_pygame_focus()
@@ -521,7 +612,7 @@ def run_test(cfg):
 
         start  = time.time()
         passed = False
-        gaze_q = deque(maxlen=10)
+        gaze_q = deque(maxlen=5)
         hold_start = None
 
         x0 = centers[side][0] - rad
@@ -534,7 +625,7 @@ def run_test(cfg):
                     gf.release(); pygame.quit(); sys.exit()
 
             t = time.time() - start
-
+            temp=t
             # 背景（兩圓皆在）
             win.blit(bg_surface, (0, 0))
 
@@ -600,9 +691,10 @@ def run_test(cfg):
                 dist = np.hypot(avgx - centers[side][0], avgy - centers[side][1])
 
                 if dist <= cfg['thresh']:
+                    t= time.time() - start-2
                     if hold_start is None:
                         hold_start = time.time()
-                    elif time.time() - hold_start >= 0.8:
+                    elif time.time() - hold_start >= 2.0:
                         passed = True
                         break
                 else:
@@ -698,7 +790,6 @@ if __name__ == '__main__':
     os.makedirs("VA_output", exist_ok=True)
     logging.basicConfig(level=logging.DEBUG)
 
-    # ---- 初始化 gazefollower 的 logger（要檔案路徑，不是資料夾）----
     from pathlib import Path
     import time, tempfile
 
@@ -706,9 +797,8 @@ if __name__ == '__main__':
         log_dir = Path(__file__).resolve().parent / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"gazefollower_{time.strftime('%Y%m%d_%H%M%S')}.log"
-        GFLog.init(str(log_file))   # ✅ 傳入完整檔案路徑
+        GFLog.init(str(log_file))   
     except Exception:
-        # 若專案資料夾被鎖，退回到 temp 也行
         tmp = Path(tempfile.gettempdir()) / "GazeFollower" / "gazefollower.log"
         tmp.parent.mkdir(parents=True, exist_ok=True)
         GFLog.init(str(tmp))

@@ -1,7 +1,0 @@
-mediapipe==0.10.5
-MNN
-numpy
-opencv-python
-pandas
-pygame
-screeninfo

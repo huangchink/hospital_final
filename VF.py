@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 # ================================================================
-# SVOP Demo ‧ 隱藏側邊按鈕版（可從 GUI 選擇Goldmann II~V、刺激圖片、並持續旋轉）
-# 可載入/儲存 calibration checkpoint；可調整 gaze marker；加入校正圖與尺寸
-# 預覽/校正前後使用事件過濾器，避免空白鍵卡住
-# 結束時顯示 PASS/FAIL 總數
+# SVOP Demo ‧ 無校正版：只載入 calibration checkpoint 後進行測試
+# 可從 GUI 選擇 Goldmann II~V、刺激圖片、是否旋轉、刺激點數等
+# 載入/儲存 last_settings.json；可調整 gaze marker 樣式
+# 結束時顯示 PASS/FAIL 總數並輸出 CSV
 # ================================================================
 import os, sys, math, time, datetime, logging
 from collections import deque
@@ -20,9 +20,8 @@ mpa.logging = logging
 from gazefollower import GazeFollower
 from gazefollower.misc import DefaultConfig
 from gazefollower.calibration import SVRCalibration
-import json
-from tkinter import messagebox
 from gazefollower.logger import Log as GFLog
+import json
 
 # ----------------------------------------------------------------
 # Logging
@@ -51,43 +50,45 @@ PASS_COLOR        = (0, 255, 0)
 ERROR_COLOR       = (255, 0, 0)
 
 # ----------------------------------------------------------------
-# Event-filter helpers（防止空白鍵卡住）
+# Event-filter helpers（保留：若未來需要再用）
 # ----------------------------------------------------------------
 def restore_event_filter():
-    # 允許所有事件（None = 關閉過濾）
     try:
         pygame.event.set_allowed(None)
         pygame.event.clear()
         pygame.event.pump()
-        # 視情況釋放 grab
         try: pygame.event.set_grab(False)
         except Exception: pass
     except Exception:
         pass
 
 def prep_input_for_calibration():
-    # 1) 關掉文字輸入/IME，避免空白被當成選字
     try:
         pygame.key.stop_text_input()
     except Exception:
         pass
-    # 2) 清掉卡住的修飾鍵狀態（Shift/Ctrl/Alt）
     try:
         pygame.key.set_mods(0)
     except Exception:
         pass
-    # 3) 事件佇列清空，只保留關鍵事件
     pygame.event.set_allowed(None)
     pygame.event.set_allowed([pygame.KEYDOWN, pygame.KEYUP, pygame.QUIT,
                               pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
                               pygame.ACTIVEEVENT])
     pygame.event.clear()
     pygame.event.pump()
-    # 4) 把鍵盤/滑鼠焦點鎖到這個視窗（可選）
     try:
         pygame.event.set_grab(True)
     except Exception:
         pass
+
+def ensure_pygame_focus(timeout=2.0):
+    t0 = time.time()
+    while not pygame.key.get_focused():
+        pygame.event.pump()
+        if time.time() - t0 > timeout:
+            break
+        time.sleep(0.02)
 
 # ----------------------------------------------------------------
 # Helpers
@@ -137,14 +138,6 @@ def convert_positions_to_pixels(deg_pts, w, h, px_per_cm, dist_cm, diameter_px):
     right  = w - margin
     return [(max(margin,min(x,right)),max(margin,min(y,h-margin))) for x,y in raw]
 
-def _default_profile_dir(cfg, W, H):
-    """預設的校正檔案資料夾：<專案>/calibration_profiles/{user}_{pts}pt_{WxH}"""
-    project_root = Path(__file__).resolve().parent
-    base = project_root / "calibration_profiles"
-    base.mkdir(parents=True, exist_ok=True)
-    name = (cfg['user_name'] or "default").strip().replace(" ", "_")
-    return base / f"{name}_{cfg['calib_points']}pt_{W}x{H}"
-
 # ----------------------------------------------------------------
 # Config GUI
 # ----------------------------------------------------------------
@@ -152,9 +145,16 @@ class ConfigGUI:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("SVOP Test Configuration")
-        self.root.geometry("560x1080")
-        self.cancelled = True  # 預設視為取消，只有按 Start 時才改為 False
+        self.root.geometry("560x1040")
+        self.cancelled = True
         self.root.protocol("WM_DELETE_WINDOW", self.on_cancel)
+
+        # === 預設資料夾 ===
+        self.default_calib_dir = Path(__file__).resolve().parent / "calibration_profiles"
+        self.default_calib_dir.mkdir(parents=True, exist_ok=True)
+        self.default_stim_dir  = Path(__file__).resolve().parent / "刺激源圖片選擇"
+        self.default_stim_dir.mkdir(parents=True, exist_ok=True)
+
         # User name
         tk.Label(self.root, text="User Name:").pack(pady=4)
         self.user_name = tk.StringVar(value="test_subject")
@@ -167,16 +167,6 @@ class ConfigGUI:
             self.root,
             textvariable=self.size,
             values=list(ANGULAR_DIAMETERS.keys()),
-            state="readonly"
-        ).pack()
-
-        # Calibration points
-        tk.Label(self.root, text="Calibration Points:").pack(pady=4)
-        self.calib_points = tk.IntVar(value=9)
-        ttk.Combobox(
-            self.root,
-            textvariable=self.calib_points,
-            values=[5, 9, 13],
             state="readonly"
         ).pack()
 
@@ -218,35 +208,22 @@ class ConfigGUI:
         self.rot_speed = tk.DoubleVar(value=90.0)
         tk.Entry(self.root, textvariable=self.rot_speed).pack()
 
-        # Stimulus image
+        # === Stimulus image（預設為「刺激源圖片選擇」資料夾；Browse 直接開在那）===
         tk.Label(self.root, text="Stimulus Image:").pack(pady=4)
-        self.stim_path = tk.StringVar(value="./stimulus_image/ball.jpg")
+        # 預設先顯示資料夾路徑；若使用者沒挑檔，啟動前會自動在該資料夾挑第一張圖片
+        self.stim_path = tk.StringVar(value=str(self.default_stim_dir))
         frame = tk.Frame(self.root); frame.pack(fill="x", padx=10)
         tk.Entry(frame, textvariable=self.stim_path).pack(side="left", expand=True, fill="x")
         tk.Button(frame, text="Browse…", command=self.browse).pack(side="right")
 
-        # --- Calibration folder (optional) ---
-        tk.Label(self.root, text="Calibration folder (optional):").pack(pady=4)
-        self.calib_dir = tk.StringVar(value="")
+        # ✅ Calibration folder（必填；預設為 calibration_profiles；Browse 也開在那）
+        tk.Label(self.root, text="Calibration folder (required):").pack(pady=4)
+        self.calib_dir = tk.StringVar(value=str(self.default_calib_dir))
         cframe = tk.Frame(self.root); cframe.pack(fill="x", padx=10)
         tk.Entry(cframe, textvariable=self.calib_dir).pack(side="left", expand=True, fill="x")
         tk.Button(cframe, text="Browse…", command=self.browse_calib_dir).pack(side="right")
 
-        # --- Calibration target image & size ---
-        tk.Label(self.root, text="Calibration target image (optional):").pack(pady=4)
-        self.cali_img_path = tk.StringVar(value="")
-        cif = tk.Frame(self.root); cif.pack(fill="x", padx=10)
-        tk.Entry(cif, textvariable=self.cali_img_path).pack(side="left", expand=True, fill="x")
-        tk.Button(cif, text="Browse…", command=self.browse_cali_img).pack(side="right")
-
-        tk.Label(self.root, text="Calibration image size (px):").pack(pady=4)
-        sizef = tk.Frame(self.root); sizef.pack()
-        self.cali_w = tk.IntVar(value=170)
-        self.cali_h = tk.IntVar(value=170)
-        tk.Entry(sizef, textvariable=self.cali_w, width=6).pack(side="left")
-        tk.Label(sizef, text=" x ").pack(side="left")
-        tk.Entry(sizef, textvariable=self.cali_h, width=6).pack(side="left")
-        # --- Gaze marker style ---
+        # Gaze marker style
         tk.Label(self.root, text="Gaze marker color (R,G,B):").pack(pady=4)
         self.gaze_color = tk.StringVar(value="0,255,0")
         gframe = tk.Frame(self.root); gframe.pack(fill="x", padx=10)
@@ -261,15 +238,17 @@ class ConfigGUI:
         self.gaze_width = tk.IntVar(value=2)
         tk.Entry(self.root, textvariable=self.gaze_width).pack()
 
-        # ▶ 新增：按鈕列（載入上一筆 / 開始）
+        # Buttons
         btn_row = tk.Frame(self.root); btn_row.pack(pady=12)
         tk.Button(btn_row, text="Use last settings", command=self.on_load_last).pack(side="left", padx=6)
         tk.Button(btn_row, text="Start Test", command=self.on_start).pack(side="left", padx=6)
 
         self.root.mainloop()
+
     def on_cancel(self):
         self.cancelled = True
         self.root.destroy()
+
     def pick_color(self):
         rgb = colorchooser.askcolor()[0]
         if rgb:
@@ -279,26 +258,35 @@ class ConfigGUI:
     def browse(self):
         f = filedialog.askopenfilename(
             title="Select stimulus image",
-            filetypes=[("Image", "*.png *.jpg *.jpeg *.bmp"), ("All", "*.*")]
+            initialdir=str(self.default_stim_dir),
+            filetypes=[("Image", "*.png *.jpg *.jpeg *.bmp *.gif"), ("All", "*.*")]
         )
         if f:
             self.stim_path.set(f)
 
     def browse_calib_dir(self):
-        d = filedialog.askdirectory(title="Select calibration folder")
+        d = filedialog.askdirectory(
+            title="Select calibration folder",
+            initialdir=str(self.default_calib_dir)
+        )
         if d:
             self.calib_dir.set(d)
 
-    def browse_cali_img(self):
-        f = filedialog.askopenfilename(
-            title="Select calibration target image",
-            filetypes=[("Image", "*.png *.jpg *.jpeg *.bmp *.gif"), ("All", "*.*")]
-        )
-        if f:
-            self.cali_img_path.set(f)
-
     def on_start(self):
         try:
+            # 若 stim_path 是資料夾，就嘗試自動挑第一張圖片
+            sp = Path(self.stim_path.get())
+            if sp.is_dir():
+                for pattern in ("*.png","*.jpg","*.jpeg","*.bmp","*.gif"):
+                    pics = sorted(sp.glob(pattern))
+                    if pics:
+                        self.stim_path.set(str(pics[0]))
+                        break
+
+            if not self.calib_dir.get().strip():
+                raise ValueError("Please choose a calibration folder created by calibration.py")
+            if not Path(self.calib_dir.get().strip()).exists():
+                raise ValueError("Calibration folder does not exist.")
             if self.screen_width_cm.get() <= 0 or self.viewing_distance_cm.get() <= 0:
                 raise ValueError("Screen width/distance must be > 0")
             if self.enable_rotation.get() and self.rot_speed.get() < 0:
@@ -309,18 +297,14 @@ class ConfigGUI:
             messagebox.showerror("Input Error", str(e))
             return
 
-        # ✅ 存成 last_settings.json 供下次一鍵載入
         self._save_last_settings()
-        self.cancelled = False   # ← 使用者真的要開始
-
+        self.cancelled = False
         self.root.destroy()
-
 
     def get(self):
         return {
             "user_name":           self.user_name.get().strip().replace(" ", "_"),
             "goldmann_size":       self.size.get(),
-            "calib_points":        self.calib_points.get(),
             "stim_points":         self.stim_points.get(),
             "screen_width_cm":     self.screen_width_cm.get(),
             "viewing_distance_cm": self.viewing_distance_cm.get(),
@@ -329,14 +313,12 @@ class ConfigGUI:
             "rot_speed":           self.rot_speed.get(),
             "stim_path":           self.stim_path.get(),
             "calib_dir":           self.calib_dir.get().strip(),
-            "cali_img_path":       self.cali_img_path.get().strip(),
-            "cali_img_size":       (self.cali_w.get(), self.cali_h.get()),
             "gaze_color":          self.gaze_color.get().strip(),
             "gaze_radius":         self.gaze_radius.get(),
             "gaze_width":          self.gaze_width.get(),
         }
+
     def _save_last_settings(self):
-        """把目前 GUI 的設定存到 JSON，供下次載入"""
         data = self.get()
         try:
             LAST_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -346,7 +328,6 @@ class ConfigGUI:
             logging.warning(f"Save last settings failed: {e}")
 
     def on_load_last(self):
-        """按鈕事件：載入上一次設定並套到 GUI"""
         if not LAST_SETTINGS_FILE.exists():
             messagebox.showinfo("No saved settings", "找不到上一筆設定（last_settings.json）。")
             return
@@ -357,33 +338,21 @@ class ConfigGUI:
             messagebox.showerror("Load error", f"讀取 last_settings.json 失敗：\n{e}")
             return
 
-        # 逐欄套回 GUI（有值才覆蓋）
         self.user_name.set(d.get("user_name", self.user_name.get()))
         self.size.set(d.get("goldmann_size", self.size.get()))
-        self.calib_points.set(d.get("calib_points", self.calib_points.get()))
         self.stim_points.set(d.get("stim_points", self.stim_points.get()))
         self.screen_width_cm.set(float(d.get("screen_width_cm", self.screen_width_cm.get())))
         self.viewing_distance_cm.set(float(d.get("viewing_distance_cm", self.viewing_distance_cm.get())))
         self.threshold_dist.set(int(d.get("threshold_dist", self.threshold_dist.get())))
         self.enable_rotation.set(bool(d.get("enable_rotation", self.enable_rotation.get())))
         self.rot_speed.set(float(d.get("rot_speed", self.rot_speed.get())))
-        self.stim_path.set(d.get("stim_path", self.stim_path.get()))
-        self.calib_dir.set(d.get("calib_dir", self.calib_dir.get()))
-        self.cali_img_path.set(d.get("cali_img_path", self.cali_img_path.get()))
-
-        # cali_img_size 可能是 list/tuple
-        cali_size = d.get("cali_img_size", (self.cali_w.get(), self.cali_h.get()))
-        try:
-            w, h = int(cali_size[0]), int(cali_size[1])
-            self.cali_w.set(w); self.cali_h.set(h)
-        except Exception:
-            pass
-
+        self.stim_path.set(d.get("stim_path", str(self.default_stim_dir)))
+        self.calib_dir.set(d.get("calib_dir", str(self.default_calib_dir)))
         self.gaze_color.set(d.get("gaze_color", self.gaze_color.get()))
         self.gaze_radius.set(int(d.get("gaze_radius", self.gaze_radius.get())))
         self.gaze_width.set(int(d.get("gaze_width", self.gaze_width.get())))
-
         messagebox.showinfo("Loaded", "已套用上一筆設定。")
+
 # ----------------------------------------------------------------
 # SVOP Test (with continuous rotation & end summary)
 # ----------------------------------------------------------------
@@ -470,7 +439,6 @@ def svop_test(screen, stim_pts, stim_deg_list, diameter_px, gf, stim_img, font, 
 
         x_deg,y_deg = stim_deg_list[idx-1]
         stim_ecc = math.hypot(x_deg, y_deg)
-        # 記錄結果
         results.append({
             "user_name": cfg['user_name'],
             "stim_index": idx,
@@ -481,7 +449,7 @@ def svop_test(screen, stim_pts, stim_deg_list, diameter_px, gf, stim_img, font, 
             "result": "PASS" if passed else "FAIL"
         })
 
-        # 顯示單次 PASS/FAIL
+        # 單次 PASS/FAIL 顯示
         screen.fill(BACKGROUND_COLOR)
         msg = "PASS" if passed else "FAIL"
         col = PASS_COLOR if passed else ERROR_COLOR
@@ -490,7 +458,7 @@ def svop_test(screen, stim_pts, stim_deg_list, diameter_px, gf, stim_img, font, 
         pygame.display.flip()
         time.sleep(1)
 
-    # 結束後顯示總數
+    # 結束後總結
     pass_count = sum(1 for r in results if r['result']=="PASS")
     fail_count = sum(1 for r in results if r['result']=="FAIL")
     screen.fill(BACKGROUND_COLOR)
@@ -507,12 +475,13 @@ def svop_test(screen, stim_pts, stim_deg_list, diameter_px, gf, stim_img, font, 
     fname = f"VF_output/svop_{cfg['user_name']}_{datetime.datetime.now():%Y%m%d%H%M%S}.csv"
     df.to_csv(fname, index=False, encoding="utf-8-sig")
     logging.info(f"Results saved to {fname}")
+
 def _init_gf_logger():
     try:
         log_dir = Path(__file__).resolve().parent / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"gazefollower_{time.strftime('%Y%m%d_%H%M%S')}.log"
-        GFLog.init(str(log_file))   # ✅ 一定要在用到 SVRCalibration 前呼叫
+        GFLog.init(str(log_file))
     except Exception:
         import tempfile
         tmp = Path(tempfile.gettempdir()) / "GazeFollower" / "gazefollower.log"
@@ -523,12 +492,12 @@ def _init_gf_logger():
 # Main
 # ----------------------------------------------------------------
 def main():
-    _init_gf_logger()   # ← 加這行
+    _init_gf_logger()
 
     gui = ConfigGUI()
     if gui.cancelled:
         logging.info("User cancelled in config GUI. Exit.")
-        return  # 或 sys.exit(0)
+        return
 
     cfg = gui.get()
     pygame.init(); pygame.font.init()
@@ -558,40 +527,24 @@ def main():
     diameter_px= angular_to_pixel_diameter(angle_deg, dist_cm, px_per_cm)
     stim_img   = pygame.transform.scale(stim_raw, (diameter_px, diameter_px))
 
-    # ---- Calibration checkpoint ----
-    dcfg = DefaultConfig(); dcfg.cali_mode = cfg['calib_points']
+    # ---- Calibration checkpoint：只載入，不校正 ----
+    profile_dir = Path(cfg["calib_dir"])
+    if not profile_dir.exists():
+        messagebox.showerror("Calibration missing", f"Folder not found:\n{profile_dir}")
+        pygame.quit(); sys.exit(1)
 
-    # 套用校正圖/尺寸（有填才設定）
-    if cfg.get('cali_img_path'):
-        dcfg.cali_target_img = cfg['cali_img_path']
-    if cfg.get('cali_img_size'):
-        dcfg.cali_target_size = tuple(cfg['cali_img_size'])
-
-    # 校正檔資料夾
-    if cfg.get("calib_dir"):
-        profile_dir = Path(cfg["calib_dir"])
-    else:
-        profile_dir = _default_profile_dir(cfg, W, H)
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    logging.info(f"Calibration folder: {profile_dir}")
-
+    dcfg = DefaultConfig()  # 不設定校正選項；只用現有 checkpoint
     calib = SVRCalibration(model_save_path=str(profile_dir))
     gf = GazeFollower(config=dcfg, calibration=calib)
 
-    # ---- 預覽/校正：前置清理事件 → 預覽/校正 → 恢復事件過濾 ----
-    prep_input_for_calibration()
-    gf.preview(win=screen)
-
     if not gf.calibration.has_calibrated:
-        logging.info("No checkpoint found → running calibration…")
-        gf.calibrate(win=screen)
-        ok = gf.calibration.save_model()
-        logging.info(f"Calibration saved: {ok}")
-    else:
-        logging.info("Loaded checkpoint → skip calibrate()")
+        messagebox.showerror(
+            "Calibration missing",
+            f"No checkpoint detected in:\n{profile_dir}\n\nPlease run calibration.py first."
+        )
+        pygame.quit(); sys.exit(1)
 
-    restore_event_filter()
-
+    ensure_pygame_focus()
     gf.start_sampling(); time.sleep(0.1)
 
     pts_deg = generate_points(cfg['stim_points'], max_deg_horizon, max_deg_vertical)

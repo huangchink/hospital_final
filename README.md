@@ -21,17 +21,17 @@ pip install mediapipe
 python setup.py install
 ```
 
-### now you can run VA_GUI_two_tk_cpd.py to test Visual acuity
+### now you can run VA.py to test Visual acuity
 ```bash
 
-python VA_GUI_two_tk_cpd.py
+python VA.py
 ```
 
 
-### now you can run VF_GUI_v2.py to test Visual Field
+### now you can run VF.py to test Visual Field
 ```bash
 
-python VF_GUI_v2.py
+python VF.py
 ```
 
 ```BibTeX

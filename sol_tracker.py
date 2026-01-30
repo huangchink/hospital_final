@@ -270,17 +270,54 @@ class ScreenProjector3D:
         Convert a 3D point in Camera Frame to Screen Pixels using provided pose (rvec, tvec).
         """
         if point_camera_m is None: return None
-        
+
         # T_cam_to_screen = T_screen_to_cam ^ -1
         R_screen_to_cam, _ = cv2.Rodrigues(rvec)
         R_cam_to_screen = R_screen_to_cam.T
         t_screen_to_cam = tvec
-        
+
         # P_screen = R^T * (P_cam - t)
         point_screen_m = R_cam_to_screen @ (point_camera_m.reshape(3,1) - t_screen_to_cam.reshape(3,1))
         point_screen_m = point_screen_m.flatten()
-        
+
         return self.physical_to_pixels(point_screen_m, screen_width_px, screen_width_m)
+
+    def get_current_pose(self):
+        """
+        Thread-safe retrieval of current pose for calibration.
+
+        Returns:
+            Tuple of (rvec, tvec) copies, or (None, None) if pose is not valid
+        """
+        with self.pose_lock:
+            if not self.is_pose_valid or self.smoothed_rvec is None:
+                return None, None
+            return self.smoothed_rvec.copy(), self.smoothed_tvec.copy()
+
+    def back_project_screen_to_camera(self, screen_point_m, rvec, tvec):
+        """
+        Convert screen point (in meters, Z=0 plane) to camera frame coordinates.
+
+        This is the inverse of project_gaze_to_screen - given a point on the screen,
+        compute its 3D position in the camera coordinate frame.
+
+        Args:
+            screen_point_m: 2D point on screen in meters [x, y] (Z=0 assumed)
+            rvec: Rotation vector from screen to camera
+            tvec: Translation vector from screen to camera
+
+        Returns:
+            3D point in camera frame coordinates (meters)
+        """
+        # Screen point in 3D (Z=0 plane)
+        screen_3d = np.array([screen_point_m[0], screen_point_m[1], 0], dtype=np.float64)
+
+        # Transform from screen frame to camera frame
+        # P_cam = R * P_screen + t
+        R_screen_to_cam, _ = cv2.Rodrigues(rvec)
+        point_camera_m = R_screen_to_cam @ screen_3d.reshape(3, 1) + tvec.reshape(3, 1)
+
+        return point_camera_m.flatten()
 
 class SolConnector:
     """

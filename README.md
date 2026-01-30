@@ -12,7 +12,7 @@ pip install pandas
 pip install MNN==3.1.3
 pip install opencv-python
 pip install pygame
-pip install mediapipe
+pip install mediapipe==0.10.21
 ```
 
 ### run setup.py 

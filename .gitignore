@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 *.py[cod]
+venv/
 
 # Logs
 logs/
@@ -10,6 +11,7 @@ va_crash_log.txt
 # Output Data
 VA_output/
 VF_output/
+data/
 *.csv
 
 # Temporary Files

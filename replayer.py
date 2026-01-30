@@ -17,11 +17,11 @@ class VideoController:
         self.last_frame_img = None
         self.width = 0
         self.height = 0
-        
+
         if self.cap.isOpened():
             self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            
+
             # Load Timestamps
             if os.path.exists(timestamp_path):
                 try:
@@ -42,7 +42,7 @@ class VideoController:
     def get_frame_at_time(self, t):
         if not self.valid or not self.timestamps.size:
             return None
-        
+
         # Find frame index with timestamp <= t
         # fast check: if next frame is in future, stay current (unless current is None)
         # Search for index where timestamps[i] <= t
@@ -50,7 +50,7 @@ class VideoController:
         # side='right' -> index i such that a[:i] <= t < a[i:]
         idx = np.searchsorted(self.timestamps, t, side='right') - 1
         idx = max(0, min(idx, len(self.timestamps) - 1))
-        
+
         # If valid index
         if idx != self.current_frame_idx:
             # Seek if difference is large
@@ -60,7 +60,7 @@ class VideoController:
                 if ret:
                     self.last_frame_img = frame
                     self.current_frame_idx = idx
-            
+
             # Read forward if close
             elif idx > self.current_frame_idx:
                 # Read frames until we hit idx
@@ -70,12 +70,12 @@ class VideoController:
                     ret = self.cap.grab()
                     if not ret: break
                     self.current_frame_idx += 1
-                
+
                 # retrieve the actual target frame
                 ret, frame = self.cap.retrieve()
                 if ret:
                     self.last_frame_img = frame
-            
+
             # If idx < current_frame_idx (rewind small amount via seek, handled by 'large diff' check usually)
             # Actually abs > 5 covers rewind. If abs <= 5 and idx < current, we seek too.
             # Correct logic:
@@ -96,7 +96,7 @@ class Replayer:
     def __init__(self):
         self.session_dir = None
         self.controllers = {}
-        self.data_df = None
+        self.webcam_gaze_df = None
         self.sol_gaze_df = None
         self.start_time = 0
         self.duration = 0
@@ -104,9 +104,14 @@ class Replayer:
         self.is_playing = False
         self.playback_speed = 1.0
         self.should_quit = False
-        
+
+        # For low FPS Sol gaze handling
+        self.last_valid_sol_gaze = None
+        self.last_sol_gaze_time = None
+        self.sol_gaze_timeout = 0.5  # Show last gaze for 500ms
+
         # UI State
-        self.window_name = "NTUH Replayer (Space: Play/Pause, Left/Right: Seek, Esc: Quit)"
+        self.window_name = "NTUH Replayer (Space: Play/Pause, A/D: Seek, Esc: Quit)"
 
     def select_folder(self):
         root = tk.Tk()
@@ -118,7 +123,7 @@ class Replayer:
     def load_session(self, directory):
         self.session_dir = directory
         print(f"Loading session from: {directory}")
-        
+
         # Paths
         sc_vid = os.path.join(directory, "screen_record.mp4")
         sc_ts  = os.path.join(directory, "screen_video_timestamp.csv")
@@ -126,8 +131,9 @@ class Replayer:
         wc_ts  = os.path.join(directory, "webcam_video_timestamp.csv")
         so_vid = os.path.join(directory, "sol_video.mp4")
         so_ts  = os.path.join(directory, "sol_video_timestamp.csv")
-        
-        main_csv = os.path.join(directory, "data.csv")
+
+        # NEW: Updated CSV file names
+        webcam_csv = os.path.join(directory, "webcam_gaze_data.csv")
         sol_csv  = os.path.join(directory, "sol_gaze_data.csv")
 
         # Init Controllers
@@ -141,51 +147,75 @@ class Replayer:
         for c in self.controllers.values():
             if c.valid and len(c.timestamps) > 0:
                 start_times.append(c.timestamps[0])
-        
+
         if not start_times:
             print("Error: No valid timestamp data found.")
             return False
 
         self.start_time = min(start_times)
-        
+
         # Normalize Video Timestamps
         max_duration = 0
         for c in self.controllers.values():
             c.normalize_timestamps(self.start_time)
             if c.valid and len(c.timestamps) > 0:
                 max_duration = max(max_duration, c.timestamps[-1])
-        
+
         self.duration = max_duration
 
         # Load Data CSVs and Normalize
-        if os.path.exists(main_csv):
+        if os.path.exists(webcam_csv):
             try:
-                self.data_df = pd.read_csv(main_csv)
-                self.data_df['t_norm'] = self.data_df['timestamp'] - self.start_time
-            except: print("Error loading main data.csv")
-        
+                self.webcam_gaze_df = pd.read_csv(webcam_csv)
+                self.webcam_gaze_df['t_norm'] = self.webcam_gaze_df['timestamp'] - self.start_time
+                print(f"Loaded webcam gaze data: {len(self.webcam_gaze_df)} samples")
+            except Exception as e:
+                print(f"Error loading webcam_gaze_data.csv: {e}")
+
         if os.path.exists(sol_csv):
             try:
                 self.sol_gaze_df = pd.read_csv(sol_csv)
+                # Convert milliseconds to seconds
+                self.sol_gaze_df['timestamp'] = self.sol_gaze_df['pc_timestamp_ms'] / 1000.0
                 self.sol_gaze_df['t_norm'] = self.sol_gaze_df['timestamp'] - self.start_time
-            except: print("Error loading sol_gaze_data.csv")
-            
+                print(f"Loaded Sol gaze data: {len(self.sol_gaze_df)} samples")
+            except Exception as e:
+                print(f"Error loading sol_gaze_data.csv: {e}")
+
         print(f"Session Loaded. Duration: {self.duration:.2f}s")
         return True
 
     def get_data_at_time(self, t):
-        # Find closest row in data_df
+        """Get gaze data at specific time, handling low FPS Sol data"""
         res = {}
-        if self.data_df is not None:
-            # Assuming sorted timestamps
-            idx = self.data_df['t_norm'].searchsorted(t, side='right') - 1
-            if idx >= 0 and idx < len(self.data_df):
-                res['main'] = self.data_df.iloc[idx]
-        
+
+        # Webcam gaze data
+        if self.webcam_gaze_df is not None:
+            idx = self.webcam_gaze_df['t_norm'].searchsorted(t, side='right') - 1
+            if idx >= 0 and idx < len(self.webcam_gaze_df):
+                res['webcam'] = self.webcam_gaze_df.iloc[idx]
+
+        # Sol gaze data with low FPS handling
         if self.sol_gaze_df is not None:
-             idx = self.sol_gaze_df['t_norm'].searchsorted(t, side='right') - 1
-             if idx >= 0 and idx < len(self.sol_gaze_df):
-                 res['sol'] = self.sol_gaze_df.iloc[idx]
+            idx = self.sol_gaze_df['t_norm'].searchsorted(t, side='right') - 1
+            if idx >= 0 and idx < len(self.sol_gaze_df):
+                row = self.sol_gaze_df.iloc[idx]
+                data_time = row['t_norm']
+
+                # Check if this is fresh data (within timeout)
+                time_diff = t - data_time
+                if time_diff < self.sol_gaze_timeout:
+                    # Use this gaze data
+                    res['sol'] = row
+                    self.last_valid_sol_gaze = row
+                    self.last_sol_gaze_time = data_time
+                elif self.last_valid_sol_gaze is not None:
+                    # Use cached last valid gaze if not too old
+                    if self.last_sol_gaze_time is not None:
+                        cache_age = t - self.last_sol_gaze_time
+                        if cache_age < self.sol_gaze_timeout:
+                            res['sol'] = self.last_valid_sol_gaze
+
         return res
 
     def run(self):
@@ -195,28 +225,28 @@ class Replayer:
             if not self.load_session(d): return
 
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-        
+
         last_real_time = time.time()
-        
+
         while not self.should_quit:
             # Time Control
             now = time.time()
             dt = now - last_real_time
             last_real_time = now
-            
+
             if self.is_playing:
                 self.master_clock += dt * self.playback_speed
                 if self.master_clock > self.duration:
                     self.master_clock = self.duration
                     self.is_playing = False
-            
+
             # Fetch Frames
             frames = {}
             for name, c in self.controllers.items():
                 img = c.get_frame_at_time(self.master_clock)
                 if img is not None:
                     frames[name] = img
-            
+
             # Compose View
             # Layout: Screen Main (Left), Webcam (Top Right), Sol (Bottom Right)
             # Base Canvas 1280x720
@@ -225,9 +255,9 @@ class Replayer:
             MAIN_W = int(CANVAS_W * 0.75) # 960
             SIDE_W = CANVAS_W - MAIN_W    # 320
             SIDE_H = CANVAS_H // 2        # 360
-            
+
             canvas = np.zeros((CANVAS_H, CANVAS_W, 3), dtype=np.uint8)
-            
+
             # 1. Screen (Main)
             if 'screen' in frames:
                 sc = frames['screen']
@@ -236,50 +266,53 @@ class Replayer:
                 scale = min(MAIN_W/w, CANVAS_H/h)
                 nw, nh = int(w*scale), int(h*scale)
                 sc_resized = cv2.resize(sc, (nw, nh))
-                
+
                 # Center in Main area
                 y_off = (CANVAS_H - nh) // 2
                 x_off = (MAIN_W - nw) // 2
                 canvas[y_off:y_off+nh, x_off:x_off+nw] = sc_resized
-                
+
                 # Overlay Gaze/Events on Screen
                 # Use data at current time
                 data = self.get_data_at_time(self.master_clock)
-                if 'main' in data:
-                    row = data['main']
-                    
-                    # Transform coordinates to resized Screen Frame
-                    def to_view(x, y):
-                        if w == 0 or h == 0: return 0,0
-                        # x,y are in original screen coords (likely based on monitor resolution)
-                        # We need to map to resized sc_resized
-                        # Assuming row['stimulus_x'] is pixel coord in original frame? 
-                        # Or normalized? Usually pixel.
-                        # Let's assume original frame size matches sc.shape
-                        rx = int(x * scale) + x_off
-                        ry = int(y * scale) + y_off
-                        return rx, ry
 
-                    # Stimulus
-                    # try:
-                    #     sx, sy = float(row['stimulus_x']), float(row['stimulus_y'])
-                    #     vx, vy = to_view(sx, sy)
-                    #     cv2.circle(canvas, (vx, vy), 10, (0,0,255), -1) # Red Stimulus
-                    # except: pass
-                    
-                    # Webcam Gaze (Blue)
+                # Transform coordinates to resized Screen Frame
+                def to_view(x, y):
+                    if w == 0 or h == 0: return 0,0
+                    # x,y are in original screen coords (pixel coords in original frame)
+                    # Map to resized sc_resized
+                    rx = int(x * scale) + x_off
+                    ry = int(y * scale) + y_off
+                    return rx, ry
+
+                # Webcam Gaze (Blue)
+                if 'webcam' in data:
+                    row = data['webcam']
                     try:
-                        wx, wy = float(row['webcam_gaze_x']), float(row['webcam_gaze_y'])
-                        vx, vy = to_view(wx, wy)
-                        cv2.circle(canvas, (vx, vy), 8, (255,0,0), 2)
-                    except: pass
-                
-                    # Sol Gaze (Green)
+                        wx = row['webcam_gaze_x']
+                        wy = row['webcam_gaze_y']
+                        if pd.notna(wx) and pd.notna(wy):
+                            vx, vy = to_view(wx, wy)
+                            cv2.circle(canvas, (vx, vy), 10, (255,0,0), 2)  # Blue circle
+                            cv2.putText(canvas, "Webcam", (vx+12, vy), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,0,0), 1)
+                    except Exception as e:
+                        pass
+
+                # Sol Gaze (Green) - using mapped coordinates
+                if 'sol' in data:
+                    row = data['sol']
                     try:
-                        gx, gy = float(row['sol_gaze_x']), float(row['sol_gaze_y'])
-                        vx, vy = to_view(gx, gy)
-                        cv2.circle(canvas, (vx, vy), 8, (0,255,0), 2)
-                    except: pass
+                        # Use mapped gaze coordinates (ArUco-based projection)
+                        gx = row['mapped_gaze_x']
+                        gy = row['mapped_gaze_y']
+                        is_valid = row['is_valid']
+
+                        if pd.notna(gx) and pd.notna(gy) and is_valid == 1:
+                            vx, vy = to_view(gx, gy)
+                            cv2.circle(canvas, (vx, vy), 10, (0,255,0), 2)  # Green circle
+                            cv2.putText(canvas, "Sol", (vx+12, vy), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,255,0), 1)
+                    except Exception as e:
+                        pass
 
             # 2. Webcam (Top Right)
             if 'webcam' in frames:
@@ -288,11 +321,11 @@ class Replayer:
                 scale = min(SIDE_W/w, SIDE_H/h)
                 nw, nh = int(w*scale), int(h*scale)
                 wc_resized = cv2.resize(wc, (nw, nh))
-                
+
                 y_off = (SIDE_H - nh) // 2
                 x_off = MAIN_W + (SIDE_W - nw) // 2
                 canvas[y_off:y_off+nh, x_off:x_off+nw] = wc_resized
-                
+
                 # Label
                 cv2.putText(canvas, "Webcam", (MAIN_W+5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
 
@@ -303,11 +336,29 @@ class Replayer:
                 scale = min(SIDE_W/w, SIDE_H/h)
                 nw, nh = int(w*scale), int(h*scale)
                 so_resized = cv2.resize(so, (nw, nh))
-                
+
                 y_off = SIDE_H + (SIDE_H - nh) // 2
                 x_off = MAIN_W + (SIDE_W - nw) // 2
                 canvas[y_off:y_off+nh, x_off:x_off+nw] = so_resized
-                
+
+                # Overlay raw gaze data on Sol video
+                data = self.get_data_at_time(self.master_clock)
+                if 'sol' in data:
+                    row = data['sol']
+                    try:
+                        raw_gx = row['raw_gaze_x']
+                        raw_gy = row['raw_gaze_y']
+                        is_valid = row['is_valid']
+
+                        if pd.notna(raw_gx) and pd.notna(raw_gy) and is_valid == 1:
+                            # Transform raw gaze coordinates to canvas position
+                            vx = int(raw_gx * scale) + x_off
+                            vy = int(raw_gy * scale) + y_off
+                            cv2.circle(canvas, (vx, vy), 8, (0, 255, 255), 2)  # Yellow circle
+                            cv2.putText(canvas, "Gaze", (vx+10, vy), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                    except Exception as e:
+                        pass
+
                 # Label
                 cv2.putText(canvas, "Sol Glasses", (MAIN_W+5, SIDE_H+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
 
@@ -315,26 +366,39 @@ class Replayer:
             pct = self.master_clock / self.duration if self.duration > 0 else 0
             cv2.rectangle(canvas, (0, CANVAS_H-20), (CANVAS_W, CANVAS_H), (50,50,50), -1)
             cv2.rectangle(canvas, (0, CANVAS_H-20), (int(CANVAS_W*pct), CANVAS_H), (0,255,255), -1)
-            cv2.putText(canvas, f"{self.master_clock:.1f}s / {self.duration:.1f}s", (10, CANVAS_H-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 1)
+
+            # Status text
+            status_txt = f"{self.master_clock:.1f}s / {self.duration:.1f}s"
+            if self.is_playing:
+                status_txt += " [PLAYING]"
+            else:
+                status_txt += " [PAUSED]"
+            cv2.putText(canvas, status_txt, (10, CANVAS_H-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
 
             cv2.imshow(self.window_name, canvas)
-            
+
             # Input
             key = cv2.waitKey(1 if self.is_playing else 30) & 0xFF
             if key == 27 or key == ord('q'): # ESC/q
                 self.should_quit = True
             elif key == 32: # Space
                 self.is_playing = not self.is_playing
-            elif key == 81: # Left Arrow (code varies, checking simpler first)
-                pass 
-            elif key == ord('a') or key == 2424832: # A / Left
+            elif key == ord('a'): # A - rewind 1s
                 self.master_clock = max(0, self.master_clock - 1.0)
-            elif key == ord('d'): # D / Right
+            elif key == ord('d'): # D - forward 1s
                 self.master_clock = min(self.duration, self.master_clock + 1.0)
-            
-            # Handle Windows arrow keys
-            if key == 0: # Special key prefix
-                pass
+            elif key == ord('s'): # S - rewind 5s
+                self.master_clock = max(0, self.master_clock - 5.0)
+            elif key == ord('w'): # W - forward 5s
+                self.master_clock = min(self.duration, self.master_clock + 5.0)
+            elif key == ord('r'): # R - restart
+                self.master_clock = 0
+            elif key == ord('[') or key == ord('-'): # Slow down
+                self.playback_speed = max(0.1, self.playback_speed - 0.1)
+                print(f"Playback speed: {self.playback_speed:.1f}x")
+            elif key == ord(']') or key == ord('='): # Speed up
+                self.playback_speed = min(5.0, self.playback_speed + 0.1)
+                print(f"Playback speed: {self.playback_speed:.1f}x")
 
         cv2.destroyAllWindows()
         for c in self.controllers.values():

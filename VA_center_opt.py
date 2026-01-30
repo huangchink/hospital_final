@@ -35,6 +35,17 @@ except ImportError:
     SDK_AVAILABLE = False
     print("Warning: sol_tracker module not found or dependencies missing (ganzin_sol_sdk). Sol features disabled.")
 
+# [NEW] Sol Offset Calibration
+try:
+    from sol_offset_calibration import (
+        apply_angular_offset, load_sol_offset, save_sol_offset, clear_sol_offset,
+        SolOffsetCalibrator
+    )
+    SOL_OFFSET_AVAILABLE = True
+except ImportError:
+    SOL_OFFSET_AVAILABLE = False
+    print("Warning: sol_offset_calibration module not found. Sol offset calibration disabled.")
+
 from recorder import Recorder
 
 # [NEW] Imports for Webcam Preview
@@ -305,6 +316,13 @@ class SettingsWindow(tk.Tk):
         # [NEW] Gaze Marker Toggle
         self.show_gaze_marker_var = tk.BooleanVar(value=True)
 
+        # [NEW] Sol Offset Calibration Vars
+        self.sol_offset_target_img_var = tk.StringVar(value="")
+        self.sol_offset_target_size_var = tk.StringVar(value="100")
+        self.sol_offset_num_points_var = tk.StringVar(value="5")
+        self.sol_offset_user_screen_var = tk.StringVar(value="0")
+        self.sol_offset_tester_screen_var = tk.StringVar(value="1")
+
         self.cfg = None
         
         # Validation Registration
@@ -349,7 +367,13 @@ class SettingsWindow(tk.Tk):
         # Insert before Rec
         self.notebook.insert(1, self.tab_webcam, text='Webcam Preview')
         self.build_webcam_tab(self.tab_webcam, LABEL_FONT, ENTRY_FONT)
-        
+
+        # [NEW] Sol Offset Calibration Tab
+        self.tab_sol_offset = ttk.Frame(self.notebook)
+        # Insert after Sol Settings tab (index 3)
+        self.notebook.insert(3, self.tab_sol_offset, text='Sol Offset Calibration')
+        self.build_sol_offset_tab(self.tab_sol_offset, LABEL_FONT, ENTRY_FONT)
+
         # Cleanup on close
         self.protocol("WM_DELETE_WINDOW", self.on_close_window)
 
@@ -683,6 +707,245 @@ class SettingsWindow(tk.Tk):
         ttk.Label(grp_sm, text="Gaze Smooth Factor:", font=l_font).grid(row=0, column=2, **pad)
         ttk.Spinbox(grp_sm, textvariable=self.sol_gaze_smooth_var, from_=0.01, to=1.0, increment=0.01, width=8).grid(row=0, column=3, **pad)
 
+    def build_sol_offset_tab(self, parent, l_font, e_font):
+        """Build the Sol Offset Calibration tab."""
+        pad = {'padx': 10, 'pady': 5}
+
+        # Target Settings
+        grp_target = ttk.LabelFrame(parent, text="Target Settings")
+        grp_target.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(grp_target, text="Target Image:", font=l_font).grid(row=0, column=0, sticky="w", **pad)
+        img_frame = ttk.Frame(grp_target)
+        img_frame.grid(row=0, column=1, columnspan=2, sticky="w", **pad)
+        ttk.Entry(img_frame, textvariable=self.sol_offset_target_img_var, font=e_font, width=40).pack(side="left")
+
+        def _browse_target_img():
+            p = filedialog.askopenfilename(filetypes=[("Images", "*.png;*.jpg;*.jpeg;*.bmp"), ("All", "*.*")])
+            if p:
+                self.sol_offset_target_img_var.set(p)
+        ttk.Button(img_frame, text="Browse...", command=_browse_target_img).pack(side="left", padx=5)
+
+        ttk.Label(grp_target, text="Target Size (px):", font=l_font).grid(row=1, column=0, sticky="w", **pad)
+        ttk.Spinbox(grp_target, textvariable=self.sol_offset_target_size_var, from_=50, to=500, increment=10, width=10).grid(row=1, column=1, sticky="w", **pad)
+
+        ttk.Label(grp_target, text="Calibration Points:", font=l_font).grid(row=2, column=0, sticky="w", **pad)
+        ttk.Spinbox(grp_target, textvariable=self.sol_offset_num_points_var, from_=1, to=10, increment=1, width=10).grid(row=2, column=1, sticky="w", **pad)
+        ttk.Label(grp_target, text="(1-10)", font=("Arial", 9)).grid(row=2, column=2, sticky="w", **pad)
+
+        # Display Settings
+        grp_display = ttk.LabelFrame(parent, text="Display Settings")
+        grp_display.pack(fill="x", padx=10, pady=5)
+
+        # Get available screens
+        try:
+            import pygame
+            pygame.init()
+            num_displays = pygame.display.get_num_displays()
+            pygame.quit()
+        except:
+            num_displays = 2
+        screen_options = [str(i) for i in range(max(num_displays, 2))]
+
+        ttk.Label(grp_display, text="User Screen (target display):", font=l_font).grid(row=0, column=0, sticky="w", **pad)
+        ttk.Combobox(grp_display, textvariable=self.sol_offset_user_screen_var, values=screen_options, state="readonly", width=10).grid(row=0, column=1, sticky="w", **pad)
+
+        ttk.Label(grp_display, text="Tester Screen (monitoring):", font=l_font).grid(row=1, column=0, sticky="w", **pad)
+        ttk.Combobox(grp_display, textvariable=self.sol_offset_tester_screen_var, values=screen_options, state="readonly", width=10).grid(row=1, column=1, sticky="w", **pad)
+
+        # Current Offset Status
+        grp_status = ttk.LabelFrame(parent, text="Current Offset Status")
+        grp_status.pack(fill="x", padx=10, pady=5)
+
+        self.lbl_sol_offset_pitch = ttk.Label(grp_status, text="Pitch Offset: No calibration", font=l_font)
+        self.lbl_sol_offset_pitch.grid(row=0, column=0, columnspan=2, sticky="w", **pad)
+
+        self.lbl_sol_offset_yaw = ttk.Label(grp_status, text="Yaw Offset: No calibration", font=l_font)
+        self.lbl_sol_offset_yaw.grid(row=1, column=0, columnspan=2, sticky="w", **pad)
+
+        self.lbl_sol_offset_timestamp = ttk.Label(grp_status, text="Last Calibrated: Never", font=("Arial", 10))
+        self.lbl_sol_offset_timestamp.grid(row=2, column=0, columnspan=2, sticky="w", **pad)
+
+        # Buttons
+        btn_frame = ttk.Frame(parent)
+        btn_frame.pack(fill="x", padx=10, pady=10)
+
+        self.btn_start_sol_offset_cal = ttk.Button(btn_frame, text="Start Calibration", command=self.start_sol_offset_calibration)
+        self.btn_start_sol_offset_cal.pack(side="left", padx=5)
+
+        self.btn_clear_sol_offset = ttk.Button(btn_frame, text="Clear Offset", command=self.clear_sol_offset)
+        self.btn_clear_sol_offset.pack(side="left", padx=5)
+
+        # Instructions
+        grp_instr = ttk.LabelFrame(parent, text="Instructions")
+        grp_instr.pack(fill="x", padx=10, pady=5)
+
+        instr_text = """Calibration Process:
+1. Connect to Sol glasses in the 'Sol Settings' tab first.
+2. Click 'Start Calibration' - target will appear on user screen.
+3. Have the user look at each target position.
+4. When user is looking at target, press SPACE to pause.
+5. Click on target center to record the calibration point.
+6. Target automatically moves to next position after recording.
+
+Controls:
+  SPACE - Pause/unpause display (enables click to record)
+  Left Click - Record calibration point (only when paused)
+  Q - Cancel calibration and return to settings"""
+
+        ttk.Label(grp_instr, text=instr_text, font=("Arial", 10), justify="left").pack(anchor="w", **pad)
+
+        # Load current offset on tab creation
+        self.after(100, self.update_sol_offset_display)
+
+    def update_sol_offset_display(self):
+        """Update the Sol offset status display."""
+        if not SOL_OFFSET_AVAILABLE:
+            self.lbl_sol_offset_pitch.config(text="Pitch Offset: Module not available")
+            self.lbl_sol_offset_yaw.config(text="Yaw Offset: Module not available")
+            self.btn_start_sol_offset_cal.config(state="disabled")
+            self.btn_clear_sol_offset.config(state="disabled")
+            return
+
+        username = self.user_var.get().strip() or "anonymous"
+        offset_data = load_sol_offset(username, Path(self.calib_dir_var.get()))
+
+        if offset_data:
+            pitch_deg = offset_data.get('pitch_offset_deg', 0)
+            yaw_deg = offset_data.get('yaw_offset_deg', 0)
+            pitch_rad = offset_data.get('pitch_offset_rad', 0)
+            yaw_rad = offset_data.get('yaw_offset_rad', 0)
+            timestamp = offset_data.get('calibration_timestamp', 'Unknown')
+
+            self.lbl_sol_offset_pitch.config(text=f"Pitch Offset: {pitch_deg:.2f} deg ({pitch_rad:.4f} rad)")
+            self.lbl_sol_offset_yaw.config(text=f"Yaw Offset: {yaw_deg:.2f} deg ({yaw_rad:.4f} rad)")
+            self.lbl_sol_offset_timestamp.config(text=f"Last Calibrated: {timestamp}")
+        else:
+            self.lbl_sol_offset_pitch.config(text="Pitch Offset: No calibration")
+            self.lbl_sol_offset_yaw.config(text="Yaw Offset: No calibration")
+            self.lbl_sol_offset_timestamp.config(text="Last Calibrated: Never")
+
+    def start_sol_offset_calibration(self):
+        """Start the Sol offset calibration process."""
+        if not SOL_OFFSET_AVAILABLE:
+            messagebox.showerror("Error", "Sol offset calibration module not available.")
+            return
+
+        if not self.is_sol_connected:
+            messagebox.showerror("Error", "Sol glasses not connected. Please connect in 'Sol Settings' tab first.")
+            return
+
+        if self.sol_cam_params is None:
+            messagebox.showerror("Error", "Sol camera parameters not available.")
+            return
+
+        # Get current screen dimensions (will be overridden by pygame)
+        info = pygame.display.Info() if pygame.get_init() else None
+
+        # Prepare ArUco assets
+        aruco_dict_key = self.sol_aruco_dict_var.get()
+        aruco_dict_map = {
+            "DICT_4X4_50": cv2.aruco.DICT_4X4_50,
+            "DICT_4X4_100": cv2.aruco.DICT_4X4_100,
+            "DICT_4X4_250": cv2.aruco.DICT_4X4_250,
+            "DICT_5X5_250": cv2.aruco.DICT_5X5_250,
+            "DICT_6X6_250": cv2.aruco.DICT_6X6_250,
+        }
+        selected_dict_id = aruco_dict_map.get(aruco_dict_key, cv2.aruco.DICT_4X4_250)
+        adict = cv2.aruco.getPredefinedDictionary(selected_dict_id)
+
+        # Get screen dimensions (use temp pygame init)
+        pygame.init()
+        screen_info = pygame.display.Info()
+        screen_w, screen_h = screen_info.current_w, screen_info.current_h
+        pygame.quit()
+
+        # Create ArUco markers
+        sol_cfg_for_assets = {
+            'marker_k': self.safe_get_int(self.sol_marker_k_var, 6),
+            'marker_n': self.safe_get_int(self.sol_marker_n_var, 4),
+            'marker_pattern_size': self.safe_get_int(self.sol_marker_size_var, 80)
+        }
+        aruco_markers_px, aruco_imgs = create_calibration_assets(screen_w, screen_h, adict, sol_cfg_for_assets)
+        marker_container_size = sol_cfg_for_assets['marker_pattern_size'] + 30
+
+        # Physical screen width in meters
+        screen_width_m = self.safe_get_float(self.scr_width_cm_var, 53.0) / 100.0
+
+        # Create projector
+        cam_matrix = self.sol_cam_params.get('cam_matrix')
+        dist_coeffs = self.sol_cam_params.get('dist_coeffs')
+        if cam_matrix is None:
+            cam_matrix = np.array([[screen_w, 0, screen_w / 2], [0, screen_w, screen_h / 2], [0, 0, 1]], dtype=float)
+            dist_coeffs = np.zeros(5)
+
+        sol_projector = ScreenProjector3D(cam_matrix, dist_coeffs, adict,
+                                         smoothing_factor=self.safe_get_float(self.sol_pose_smooth_var, 0.1))
+
+        # Start background detection
+        sol_projector.start_background_detection(
+            sol_cfg_for_assets['marker_pattern_size'] / screen_w * screen_width_m,
+            aruco_markers_px,
+            marker_container_size,
+            screen_w, screen_h, screen_width_m
+        )
+
+        # Create calibrator
+        calibrator = SolOffsetCalibrator(
+            sol_projector=sol_projector,
+            sol_gaze_queue=self.sol_gaze_queue,
+            sol_scene_queue=self.sol_scene_queue,
+            screen_width_m=screen_width_m,
+            aruco_markers_px=aruco_markers_px,
+            aruco_imgs=aruco_imgs,
+            marker_container_size=marker_container_size
+        )
+
+        # Hide settings window during calibration
+        self.withdraw()
+
+        try:
+            # Run calibration
+            result = calibrator.run_calibration(
+                num_points=self.safe_get_int(self.sol_offset_num_points_var, 5),
+                target_image_path=self.sol_offset_target_img_var.get().strip() or None,
+                target_size_px=self.safe_get_int(self.sol_offset_target_size_var, 100),
+                user_screen_idx=self.safe_get_int(self.sol_offset_user_screen_var, 0),
+                tester_screen_idx=self.safe_get_int(self.sol_offset_tester_screen_var, 1)
+            )
+
+            if result:
+                # Save result
+                username = self.user_var.get().strip() or "anonymous"
+                save_sol_offset(username, Path(self.calib_dir_var.get()), result)
+                messagebox.showinfo("Success",
+                                   f"Calibration complete!\n\n"
+                                   f"Pitch offset: {result['pitch_offset_deg']:.2f} deg\n"
+                                   f"Yaw offset: {result['yaw_offset_deg']:.2f} deg\n"
+                                   f"Points used: {result['num_calibration_points']}")
+            else:
+                messagebox.showwarning("Cancelled", "Calibration was cancelled.")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Calibration failed: {e}")
+        finally:
+            # Stop background detection
+            sol_projector.stop_background_detection()
+            # Show settings window again
+            self.deiconify()
+            self.update_sol_offset_display()
+
+    def clear_sol_offset(self):
+        """Clear the Sol offset calibration file."""
+        if not SOL_OFFSET_AVAILABLE:
+            return
+
+        username = self.user_var.get().strip() or "anonymous"
+        if messagebox.askyesno("Confirm", f"Clear Sol offset calibration for user '{username}'?"):
+            clear_sol_offset(username, Path(self.calib_dir_var.get()))
+            self.update_sol_offset_display()
+            messagebox.showinfo("Cleared", "Sol offset calibration cleared.")
+
     def build_rec_tab(self, parent, l_font, e_font):
         pad = {'padx': 10, 'pady': 5}
         r = 0
@@ -958,6 +1221,7 @@ def run_test(cfg, sol_context=None):
 
     # 1. Initialize Webcam Tracker
     gf = None
+    webcam = None
     if cfg['enable_webcam']:
         profile_dir = Path(cfg['calib_dir'])
         if not profile_dir.exists():
@@ -1007,7 +1271,19 @@ def run_test(cfg, sol_context=None):
     sol_last_gaze_timestamp = None
     SOL_GAZE_CACHE_TIMEOUT = 0.150  # 150ms timeout (analysis shows median=58ms, mean=93ms between samples)
 
-    
+    # [NEW] Load Sol offset calibration if available
+    sol_offset = None
+    if cfg['enable_sol'] and SOL_OFFSET_AVAILABLE:
+        username = cfg.get('user_name', 'anonymous')
+        calib_dir = Path(cfg.get('calib_dir', 'calibration_profiles'))
+        sol_offset = load_sol_offset(username, calib_dir)
+        if sol_offset:
+            print(f"[Sol Offset] Loaded offset for user '{username}':")
+            print(f"             Pitch: {sol_offset['pitch_offset_deg']:.2f} deg ({sol_offset['pitch_offset_rad']:.4f} rad)")
+            print(f"             Yaw: {sol_offset['yaw_offset_deg']:.2f} deg ({sol_offset['yaw_offset_rad']:.4f} rad)")
+        else:
+            print(f"[Sol Offset] No offset calibration found for user '{username}'. Using raw gaze data.")
+
     # Aruco Assets
     aruco_markers_px = {}
     aruco_imgs = {}
@@ -1145,8 +1421,11 @@ def run_test(cfg, sol_context=None):
         # [FIX] Unified webcam frame retrieval
         if gf and hasattr(gf, 'camera') and gf.camera:
             return getattr(gf.camera, 'last_frame', None)
-        elif webcam and webcam.latest_frame is not None:
-            return webcam.latest_frame
+        elif webcam:
+            # Check both last_frame (WebCamCamera) and latest_frame (WebcamFrameGrabber)
+            frame = getattr(webcam, 'last_frame', None) or getattr(webcam, 'latest_frame', None)
+            if frame is not None:
+                return frame
         return None
 
     def pump_recorder():
@@ -1237,17 +1516,13 @@ def run_test(cfg, sol_context=None):
             pygame.display.flip()
             
             # Record
-            # Capture Sol Frame?
-            # Basic Recording:
-            # Record
-            # Record
             sol_f = get_sol_frame() if cfg.get('rec_sol_raw_video') else None
             wb_f = get_webcam_frame()
             rec_screen = cfg.get('rec_webcam') or cfg.get('rec_sol_data')
 
             recorder.process_and_record(
                 wb_f,
-                win if rec_screen else None,  # [FIX] Use correct config key
+                win if rec_screen else None,
                 sol_frame=sol_f
             )
             # [OPT] Restored to 30 FPS for high-rate data collection
@@ -1272,7 +1547,11 @@ def run_test(cfg, sol_context=None):
             wb_f = get_webcam_frame() if cfg.get('rec_webcam') else None
             rec_screen = cfg.get('rec_webcam') or cfg.get('rec_sol_data')
 
-            recorder.process_and_record(wb_f, win if rec_screen else None, sol_frame=sol_f)
+            recorder.process_and_record(
+                wb_f,
+                win if rec_screen else None,
+                sol_frame=sol_f
+            )
             clock.tick(60)
 
     show_interval_center(cfg.get('inter_interval_img_dur', 1.5))
@@ -1306,7 +1585,10 @@ def run_test(cfg, sol_context=None):
         start  = time.time()
         passed = False
         hold_start = None
-        
+
+        # Initialize Sol frame variable to prevent UnboundLocalError when Sol is disabled
+        sol_frame_numpy = None
+
         # Determine center pos
         x0 = centers[side][0] - rad
         y0 = centers[side][1] - rad
@@ -1337,18 +1619,31 @@ def run_test(cfg, sol_context=None):
 
             # --- Data Collection ---
             webcam_gaze_pt = None
+            webcam_face_info = None  # Store FaceInfo for landmarks/boxes
             sol_gaze_pt = None  # For evaluation (may use cache)
-            sol_raw_pt = None
-            sol_gaze_pt_for_csv = None  # [FIX] For CSV recording (only actual new data)
-            sol_raw_pt_for_csv = None
+            sol_mapped_gaze_pt_for_csv = None  # ArUco marker-based projection for CSV
+            sol_raw_gaze_pt_for_csv = None  # Raw SDK gaze_2d for CSV
+            sol_raw_gaze_data_for_csv = None  # Raw Sol SDK GazeData object
             sol_info = {}
-            
+
             # 1. Webcam Gaze
             if gf:
                 gi = gf.get_gaze_info()
                 if gi and getattr(gi, 'status', False):
                     coords = getattr(gi, 'filtered_gaze_coordinates', None) or getattr(gi, 'gaze_coordinates', None)
                     if coords: webcam_gaze_pt = (int(coords[0]), int(coords[1]))
+
+                # Get FaceInfo for landmarks and boxes (from MediaPipe)
+                # We need to call face_alignment.detect() to get the FaceInfo
+                if hasattr(gf, 'face_alignment') and gf.face_alignment:
+                    try:
+                        # Get latest frame from webcam (note: it's last_frame, not latest_frame)
+                        if webcam and hasattr(webcam, 'last_frame') and webcam.last_frame is not None:
+                            # Detect face info from current frame
+                            # Note: frame is already in RGB format from WebCamCamera
+                            webcam_face_info = gf.face_alignment.detect(int(time.time() * 1000), webcam.last_frame)
+                    except Exception as e:
+                        print(f"Failed to get face info: {e}")
 
             # 2. Sol Gaze
             if sol_connector:
@@ -1424,24 +1719,41 @@ def run_test(cfg, sol_context=None):
 
                              if norm > 0:
                                  gaze_direction_unit = gaze_direction_vec / norm
+
+                                 # [NEW] Apply Sol offset correction if available
+                                 if sol_offset is not None:
+                                     gaze_direction_unit = apply_angular_offset(
+                                         gaze_direction_unit,
+                                         sol_offset['pitch_offset_rad'],
+                                         sol_offset['yaw_offset_rad']
+                                     )
+
                                  gaze_origin_m = gaze_origin_mm / 1000.0 # Convert to meters
-                                 
-                                 # Projection logic
+
+                                 # Projection logic (ArUco marker-based)
                                  screen_pt_m = sol_projector.project_gaze_to_screen(gaze_origin_m, gaze_direction_unit)
                                  if screen_pt_m is not None:
                                       pix = sol_projector.physical_to_pixels(screen_pt_m, W, physical_width_m)
                                       if pix:
                                           sol_gaze_pt = (int(pix[0]), int(pix[1]))
-                                          sol_raw_pt = sol_gaze_pt
                                           sol_debug_counters['valid_gaze'] += 1
 
+                                          # Extract raw SDK gaze_2d coordinates (Sol glasses camera coordinates)
+                                          # Note: gaze_2d is in Sol front-facing camera pixel coordinates
+                                          raw_gaze_2d = None
+                                          if hasattr(latest_gaze, 'combined') and hasattr(latest_gaze.combined, 'gaze_2d'):
+                                              g2d = latest_gaze.combined.gaze_2d
+                                              # Use gaze_2d directly (already in Sol camera pixels)
+                                              raw_gaze_2d = (g2d.x, g2d.y)
+
                                           # [FIX] Save for CSV recording (actual new data only)
-                                          sol_gaze_pt_for_csv = sol_gaze_pt
-                                          sol_raw_pt_for_csv = sol_raw_pt
+                                          sol_mapped_gaze_pt_for_csv = sol_gaze_pt  # ArUco-based projection
+                                          sol_raw_gaze_pt_for_csv = raw_gaze_2d  # Raw SDK gaze_2d
+                                          sol_raw_gaze_data_for_csv = latest_gaze  # Save raw SDK object
 
                                           # [FIX] Cache this valid gaze with timestamp for when queue is empty
                                           sol_last_valid_gaze_pt = sol_gaze_pt
-                                          sol_last_valid_raw_pt = sol_raw_pt
+                                          sol_last_valid_raw_pt = sol_gaze_pt
                                           sol_last_gaze_timestamp = time.time()
                                       else:
                                           sol_debug_counters['projection_failed'] += 1
@@ -1508,31 +1820,61 @@ def run_test(cfg, sol_context=None):
             pygame.display.flip()
             
             # Recording
-            # Retrieve Face Mesh info from GazeFollower if available for efficiency
+            # Extract Face Mesh info from MediaPipe FaceInfo
             lms_str = ""
             face_box = ""
-            # ... Extraction logic ...
-            
+            left_eye_box = ""
+            right_eye_box = ""
+
+            if webcam_face_info and getattr(webcam_face_info, 'status', False):
+                try:
+                    # Face landmarks - format as semicolon-separated x,y,z tuples
+                    if hasattr(webcam_face_info, 'face_landmarks') and webcam_face_info.face_landmarks is not None:
+                        # face_landmarks is a numpy array of shape (478, 3)
+                        landmarks = webcam_face_info.face_landmarks
+                        lms_parts = []
+                        for i in range(len(landmarks)):
+                            lms_parts.append(f"{landmarks[i][0]:.4f},{landmarks[i][1]:.4f},{landmarks[i][2]:.4f}")
+                        lms_str = ";".join(lms_parts) if lms_parts else ""
+
+                    # Face box [x, y, w, h]
+                    if hasattr(webcam_face_info, 'face_rect') and webcam_face_info.face_rect is not None:
+                        face_box = str([int(v) for v in webcam_face_info.face_rect])
+
+                    # Left eye box [x, y, w, h]
+                    if hasattr(webcam_face_info, 'left_rect') and webcam_face_info.left_rect is not None:
+                        left_eye_box = str([int(v) for v in webcam_face_info.left_rect])
+
+                    # Right eye box [x, y, w, h]
+                    if hasattr(webcam_face_info, 'right_rect') and webcam_face_info.right_rect is not None:
+                        right_eye_box = str([int(v) for v in webcam_face_info.right_rect])
+                except Exception as e:
+                    print(f"Error extracting face info: {e}")
+
             # Recording Logic
             rec_screen = cfg.get('rec_webcam') or cfg.get('rec_sol_data')
-            
+
             # Fetch Frames
             # sol_frame_numpy is already fetched in Sol Loop
-            sol_f = sol_frame_numpy
+            sol_f = sol_frame_numpy if cfg.get('rec_sol_raw_video') else None
             wb_f = get_webcam_frame() if cfg.get('rec_webcam') else None
-            
+
             recorder.process_and_record(
                 wb_f, # Webcam Frame (only if enabled)
                 win if rec_screen else None, # Screen (if either enabled)
                 stim_pos=(x0, y0),
                 webcam_gaze=webcam_gaze_pt,
                 # [FIX] Only record actual new Sol gaze data (not cached), to maintain 30Hz CSV rate
-                sol_gaze=sol_gaze_pt_for_csv if cfg.get('rec_sol_data') else None,
-                sol_raw=sol_raw_pt_for_csv if cfg.get('rec_sol_data') else None,
+                sol_mapped_gaze=sol_mapped_gaze_pt_for_csv if cfg.get('rec_sol_data') else None,
+                sol_raw_gaze=sol_raw_gaze_pt_for_csv if cfg.get('rec_sol_data') else None,
+                sol_raw_gaze_data=sol_raw_gaze_data_for_csv if cfg.get('rec_sol_data') else None,
                 sol_frame=sol_f, # Sol Frame (only if enabled)
-                sol_info=sol_info if cfg.get('rec_sol_data') else None,
                 target_letter=f"{cpd:.1f}", # Reusing field
-                is_correct=passed
+                is_correct=passed,
+                landmarks_str=lms_str,
+                face_box=face_box,
+                left_eye_box=left_eye_box,
+                right_eye_box=right_eye_box
             )
             
             clock.tick(60)

@@ -22,3 +22,8 @@ data/
 calibration_profiles/*/
 !calibration_profiles/README.md
 !calibration_profiles/.gitkeep
+
+# Build Artifacts (PyInstaller)
+build/
+dist/
+*.egg-info/

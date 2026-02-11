@@ -307,18 +307,49 @@ class Recorder:
                 raw_gaze = d['raw_gaze']  # Raw SDK gaze_2d (x, y) or None
                 raw_data = d['raw_gaze_data']  # Sol SDK GazeData object
 
-                # Extract data from Sol SDK
-                is_valid = 1 if hasattr(raw_data, 'combined') and hasattr(raw_data.combined, 'gaze_3d') and raw_data.combined.gaze_3d.validity else 0
+                # [FIX] Safely extract data from Sol SDK with defensive checks
+                is_valid = 0
+                try:
+                    if raw_data and hasattr(raw_data, 'combined') and raw_data.combined:
+                        if hasattr(raw_data.combined, 'gaze_3d') and raw_data.combined.gaze_3d:
+                            if hasattr(raw_data.combined.gaze_3d, 'validity'):
+                                is_valid = 1 if raw_data.combined.gaze_3d.validity else 0
+                except:
+                    is_valid = 0
 
                 # Mapped coordinates (ArUco-based)
-                mapped_x, mapped_y = mapped_gaze[0], mapped_gaze[1]
+                mapped_x, mapped_y = -1, -1
+                try:
+                    if mapped_gaze:
+                        mapped_x, mapped_y = float(mapped_gaze[0]), float(mapped_gaze[1])
+                except:
+                    pass
 
                 # Raw SDK coordinates
-                raw_x, raw_y = (raw_gaze[0], raw_gaze[1]) if raw_gaze else (-1, -1)
+                raw_x, raw_y = -1, -1
+                try:
+                    if raw_gaze:
+                        raw_x, raw_y = float(raw_gaze[0]), float(raw_gaze[1])
+                except:
+                    pass
 
-                # Extract pupil sizes (in mm)
-                left_pupil_mm = raw_data.left_eye.pupil3d.diameter if hasattr(raw_data, 'left_eye') and hasattr(raw_data.left_eye, 'pupil3d') else 0.0
-                right_pupil_mm = raw_data.right_eye.pupil3d.diameter if hasattr(raw_data, 'right_eye') and hasattr(raw_data.right_eye, 'pupil3d') else 0.0
+                # Extract pupil sizes (in mm) with defensive checks
+                left_pupil_mm = 0.0
+                right_pupil_mm = 0.0
+                try:
+                    if raw_data and hasattr(raw_data, 'left_eye') and raw_data.left_eye:
+                        if hasattr(raw_data.left_eye, 'pupil3d') and raw_data.left_eye.pupil3d:
+                            if hasattr(raw_data.left_eye.pupil3d, 'diameter'):
+                                left_pupil_mm = float(raw_data.left_eye.pupil3d.diameter)
+                except:
+                    pass
+                try:
+                    if raw_data and hasattr(raw_data, 'right_eye') and raw_data.right_eye:
+                        if hasattr(raw_data.right_eye, 'pupil3d') and raw_data.right_eye.pupil3d:
+                            if hasattr(raw_data.right_eye.pupil3d, 'diameter'):
+                                right_pupil_mm = float(raw_data.right_eye.pupil3d.diameter)
+                except:
+                    pass
 
                 # Calculate visual angle and angular velocity (using mapped coordinates)
                 visual_angle_deg = 0.0

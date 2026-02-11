@@ -87,11 +87,19 @@ class WebCamCamera(Camera):
     def open(self):
         """
         Opens the webcam if it is not already opened.
+        Uses DirectShow backend on Windows for faster initialization.
         """
+        import sys
+        if sys.platform == 'win32':
+            # DirectShow is significantly faster than MSMF on Windows
+            if not self._cap.open(self.webcam_id, cv2.CAP_DSHOW):
+                Log.e("Failed to open webcam camera (DirectShow)")
+                raise Exception("Failed to open webcam camera")
+        else:
+            if not self._cap.open(self.webcam_id):
+                Log.e("Failed to open webcam camera")
+                raise Exception("Failed to open webcam camera")
         Log.i("WebCam opened")
-        if not self._cap.open(self.webcam_id):
-            Log.e("Failed to open webcam camera")
-            raise Exception("Failed to open webcam camera")
         self._create_capture_thread()
 
     def close(self):

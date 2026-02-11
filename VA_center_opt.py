@@ -412,22 +412,25 @@ class ScrollableFrame(ttk.Frame):
         self.canvas.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
 
-        # Bind mouse wheel for scrolling
-        self.scrollable_frame.bind("<Enter>", self._bind_mousewheel)
-        self.scrollable_frame.bind("<Leave>", self._unbind_mousewheel)
+        # Bind mousewheel on canvas itself
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self.scrollable_frame.bind("<MouseWheel>", self._on_mousewheel)
 
     def _on_canvas_configure(self, event):
         # Make the inner frame width match the canvas width
         self.canvas.itemconfig(self.canvas_window, width=event.width)
 
-    def _bind_mousewheel(self, event):
-        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
-
-    def _unbind_mousewheel(self, event):
-        self.canvas.unbind_all("<MouseWheel>")
-
     def _on_mousewheel(self, event):
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def bind_mousewheel_recursive(self):
+        """Call after all child widgets are added to enable mousewheel on all descendants."""
+        self._bind_wheel(self.scrollable_frame)
+
+    def _bind_wheel(self, widget):
+        widget.bind("<MouseWheel>", self._on_mousewheel)
+        for child in widget.winfo_children():
+            self._bind_wheel(child)
 
 
 class SettingsWindow(tk.Tk):
@@ -435,6 +438,7 @@ class SettingsWindow(tk.Tk):
         super().__init__()
         self.title("VA Test Settings (Optimization)")
         self.resizable(True, True)
+        self.minsize(600, 400)  # Ensure buttons always visible
 
         # [NEW] Dynamic font size based on screen resolution
         screen_height = self.winfo_screenheight()
@@ -444,24 +448,24 @@ class SettingsWindow(tk.Tk):
         # 1080p needs smaller fonts to fit everything
         if screen_height <= 900:
             font_size = 8
-            window_height = 580
-            window_width = 750
+            window_height = 780
+            window_width = 880
         elif screen_height <= 1080:
             font_size = 8
-            window_height = 680
-            window_width = 800
+            window_height = 880
+            window_width = 930
         elif screen_height <= 1200:
             font_size = 9
-            window_height = 750
-            window_width = 850
+            window_height = 950
+            window_width = 980
         elif screen_height <= 1440:
             font_size = 10
-            window_height = 820
-            window_width = 950
+            window_height = 1020
+            window_width = 1080
         else:  # 4K and above
             font_size = 11
-            window_height = 900
-            window_width = 1020
+            window_height = 1100
+            window_width = 1150
 
         self.geometry(f"{window_width}x{window_height}")
         print(f"[UI] Screen: {screen_width}x{screen_height}, Font size: {font_size}, Window: {window_width}x{window_height}")
@@ -562,12 +566,43 @@ class SettingsWindow(tk.Tk):
         # Validation Registration
         self.vcmd_int = (self.register(self.validate_int), '%P')
         self.vcmd_float = (self.register(self.validate_float), '%P')
-        
-        # --- Layout ---
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(expand=True, fill="both", padx=5, pady=5)
 
-        # [FIX] Use scrollable frames for tabs to support smaller screens
+        # --- Consistent ttk styling ---
+        style = ttk.Style()
+        heading_size = font_size + 1
+        big_font_size = font_size + 4
+
+        # Widget fonts - consistent across the entire UI
+        style.configure("TLabel", font=("Arial", font_size))
+        style.configure("TCheckbutton", font=("Arial", font_size))
+        style.configure("TButton", font=("Arial", font_size))
+        style.configure("TSpinbox", font=("Arial", font_size))
+        style.configure("TCombobox", font=("Arial", font_size))
+        style.configure("TEntry", font=("Arial", font_size))
+        style.configure("TRadiobutton", font=("Arial", font_size))
+        # LabelFrame headings - slightly larger and bold
+        style.configure("TLabelframe.Label", font=("Arial", heading_size, "bold"))
+        # Notebook tabs
+        style.configure("TNotebook.Tab", font=("Arial", font_size), padding=[10, 4])
+        # Big action buttons
+        style.configure("Big.TButton", font=("Arial", big_font_size, "bold"), padding=8)
+
+        # --- Layout: pack buttons FIRST so they always show ---
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(side="bottom", fill="x", padx=10, pady=8)
+        # Separator above buttons
+        ttk.Separator(self, orient="horizontal").pack(side="bottom", fill="x", padx=5)
+
+        self.btn_start = ttk.Button(btn_frame, text="Start Test", command=self.on_start, state="disabled", style="Big.TButton")
+        self.btn_start.pack(side="right", padx=10)
+        self.btn_practice = ttk.Button(btn_frame, text="Start Practice", command=self.on_start_practice, state="disabled", style="Big.TButton")
+        self.btn_practice.pack(side="right", padx=10)
+
+        # --- Notebook (fills remaining space) ---
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(expand=True, fill="both", padx=5, pady=(5, 0))
+
+        # Use scrollable frames for tabs to support smaller screens
         self.tab_general_scroll = ScrollableFrame(self.notebook)
         self.tab_sol_scroll = ScrollableFrame(self.notebook)
         self.tab_rec_scroll = ScrollableFrame(self.notebook)
@@ -576,21 +611,13 @@ class SettingsWindow(tk.Tk):
         self.tab_sol = self.tab_sol_scroll.scrollable_frame
         self.tab_rec = self.tab_rec_scroll.scrollable_frame
 
-        self.notebook.add(self.tab_general_scroll, text='General')
-        self.notebook.add(self.tab_sol_scroll, text='Sol')
-        self.notebook.add(self.tab_rec_scroll, text='Recording')
+        self.notebook.add(self.tab_general_scroll, text='  General  ')
+        self.notebook.add(self.tab_sol_scroll, text='  Sol  ')
+        self.notebook.add(self.tab_rec_scroll, text='  Recording  ')
 
         self.build_general_tab(self.tab_general, LABEL_FONT, ENTRY_FONT)
         self.build_sol_tab(self.tab_sol, LABEL_FONT, ENTRY_FONT)
         self.build_rec_tab(self.tab_rec, LABEL_FONT, ENTRY_FONT)
-
-        # Buttons
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(side="bottom", pady=10)
-        self.btn_start = ttk.Button(btn_frame, text="Start Test", command=self.on_start, state="disabled")
-        self.btn_start.pack(side="right", padx=10)
-        self.btn_practice = ttk.Button(btn_frame, text="Start Practice", command=self.on_start_practice, state="disabled")
-        self.btn_practice.pack(side="right", padx=10)
 
         # Initial Check
         self.check_start_button_state()
@@ -598,33 +625,34 @@ class SettingsWindow(tk.Tk):
         # Monitor changes for button state
         self.enable_webcam_var.trace_add('write', lambda *args: self.check_start_button_state())
         self.enable_sol_var.trace_add('write', lambda *args: self.check_start_button_state())
-        
-        # [NEW] Webcam Tab
+
+        # Webcam Tab
         self.tab_webcam = ttk.Frame(self.notebook)
-        # Insert before Rec
-        self.notebook.insert(1, self.tab_webcam, text='Webcam Preview')
+        self.notebook.insert(1, self.tab_webcam, text='  Webcam  ')
         self.build_webcam_tab(self.tab_webcam, LABEL_FONT, ENTRY_FONT)
 
-        # [NEW] Sol Offset Calibration Tab
-        self.tab_sol_offset = ttk.Frame(self.notebook)
-        # Insert after Sol Settings tab (index 3)
-        self.notebook.insert(3, self.tab_sol_offset, text='Sol Offset Calibration')
+        # Sol Calibration Tab (scrollable so instructions are visible)
+        self.tab_sol_offset_scroll = ScrollableFrame(self.notebook)
+        self.tab_sol_offset = self.tab_sol_offset_scroll.scrollable_frame
+        self.notebook.insert(3, self.tab_sol_offset_scroll, text='  Sol Calib  ')
         self.build_sol_offset_tab(self.tab_sol_offset, LABEL_FONT, ENTRY_FONT)
+
+        # Enable mousewheel scrolling on all scrollable tabs
+        self.tab_general_scroll.bind_mousewheel_recursive()
+        self.tab_sol_scroll.bind_mousewheel_recursive()
+        self.tab_rec_scroll.bind_mousewheel_recursive()
+        self.tab_sol_offset_scroll.bind_mousewheel_recursive()
 
         # Cleanup on close
         self.protocol("WM_DELETE_WINDOW", self.on_close_window)
 
-        # [FIX] Force focus binding and Window Lift
+        # Force focus binding and Window Lift
         self.recursive_bind_focus(self)
         self.lift()
         self.attributes("-topmost", True)
         self.after_idle(self.attributes, "-topmost", False)
         self.focus_force()
         self.after(200, lambda: self.entry_user.focus_force() if hasattr(self, 'entry_user') else None)
-
-        style = ttk.Style()
-        big_font_size = self.ui_font_size + 4  # Slightly larger for big buttons
-        style.configure("Big.TButton", font=("Arial", big_font_size, "bold"), padding=8)
 
         # Auto-load previous settings on startup (suppresses auto-save during load)
         self._auto_load_settings()
@@ -652,10 +680,21 @@ class SettingsWindow(tk.Tk):
         frame = ttk.Frame(parent, padding=10)
         frame.pack(fill="both", expand=True)
 
+        # Calibration folder (webcam-specific)
+        pad = self.ui_pad
+        grp_calib = ttk.LabelFrame(frame, text="Calibration"); grp_calib.pack(fill="x", pady=(0, 5))
+        ttk.Label(grp_calib, text="Calibration Folder:", font=label_font).grid(row=0, column=0, sticky="w", **pad)
+        cdir_frame = ttk.Frame(grp_calib); cdir_frame.grid(row=0, column=1, sticky="w", **pad)
+        ttk.Entry(cdir_frame, textvariable=self.calib_dir_var, font=entry_font, width=40).pack(side="left")
+        def _browse_calib_dir():
+            p = filedialog.askdirectory(title="Choose calibration folder", initialdir=str(self.default_calib_dir))
+            if p: self.calib_dir_var.set(p)
+        ttk.Button(cdir_frame, text="Browse", command=_browse_calib_dir).pack(side="left", padx=5)
+
         # Controls
         ctrl = ttk.Frame(frame)
         ctrl.pack(fill="x", pady=(0,10))
-        
+
         ttk.Label(ctrl, text="Select Camera:", font=label_font).pack(side="left", padx=5)
         
         # Probe Cameras
@@ -831,94 +870,94 @@ class SettingsWindow(tk.Tk):
 
     def build_general_tab(self, parent, l_font, e_font):
         pad = self.ui_pad  # Use dynamic padding
+
+        # ── Section 1: User & Tracker ──
+        grp_user = ttk.LabelFrame(parent, text="User & Tracker"); grp_user.pack(fill="x", padx=10, pady=5)
         r = 0
-        
-        # Original settings ...
-        ttk.Label(parent, text="User name:", font=l_font).grid(row=r, sticky="w", **pad)
-        self.entry_user = ttk.Entry(parent, textvariable=self.user_var, font=e_font, width=20)
-        self.entry_user.grid(row=r, column=1, **pad); r += 1
+        ttk.Label(grp_user, text="User Name:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        self.entry_user = ttk.Entry(grp_user, textvariable=self.user_var, font=e_font, width=20)
+        self.entry_user.grid(row=r, column=1, sticky="w", **pad); r += 1
 
-        ttk.Label(parent, text="Calibration folder (Webcam):", font=l_font).grid(row=r, sticky="w", **pad)
-        cdir_frame = ttk.Frame(parent); cdir_frame.grid(row=r, column=1, sticky="w", **pad)
-        ttk.Entry(cdir_frame, textvariable=self.calib_dir_var, font=e_font, width=40).pack(side="left")
-        def _browse_calib_dir():
-            p = filedialog.askdirectory(title="Choose calibration folder", initialdir=str(self.default_calib_dir))
-            if p: self.calib_dir_var.set(p)
-        ttk.Button(parent, text="Browse", command=_browse_calib_dir).grid(row=r, column=2, **pad); r += 1
-
-        # Tracker Selection
-        ttk.Label(parent, text="Trackers:", font=l_font).grid(row=r, sticky="w", **pad)
-        tracker_frame = ttk.Frame(parent)
+        ttk.Label(grp_user, text="Trackers:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        tracker_frame = ttk.Frame(grp_user)
         tracker_frame.grid(row=r, column=1, sticky="w", **pad)
         ttk.Checkbutton(tracker_frame, text="Webcam", variable=self.enable_webcam_var).pack(side="left", padx=5)
         ttk.Checkbutton(tracker_frame, text="Sol Glasses", variable=self.enable_sol_var).pack(side="left", padx=5)
         r += 1
 
-        ttk.Label(parent, text="Evaluation Source:", font=l_font).grid(row=r, sticky="w", **pad)
-        ttk.Combobox(parent, textvariable=self.eval_source_var, values=["Webcam", "Sol"], state="readonly", font=e_font).grid(row=r, column=1, **pad); r += 1
+        ttk.Label(grp_user, text="Evaluation Source:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Combobox(grp_user, textvariable=self.eval_source_var, values=["Webcam", "Sol"], state="readonly", font=e_font).grid(row=r, column=1, sticky="w", **pad); r += 1
 
-        # Stimulus & Timings
-        ttk.Label(parent, text="Stim Duration (s):", font=l_font).grid(row=r, sticky="w", **pad)
-        ttk.Spinbox(parent, textvariable=self.stim_var, from_=0.5, to=30.0, increment=0.1, font=e_font, width=10).grid(row=r, column=1, **pad); r+=1
-        
-        ttk.Label(parent, text="Pass Duration (s):", font=l_font).grid(row=r, sticky="w", **pad)
-        ttk.Spinbox(parent, textvariable=self.pass_dur_var, from_=0.1, to=10.0, increment=0.1, font=e_font, width=10).grid(row=r, column=1, **pad); r+=1
+        ttk.Checkbutton(grp_user, text="Show Gaze Marker during Test", variable=self.show_gaze_marker_var).grid(row=r, column=0, columnspan=2, sticky="w", **pad); r += 1
 
-        ttk.Label(parent, text="Blank Duration (s):", font=l_font).grid(row=r, sticky="w", **pad)
-        ttk.Spinbox(parent, textvariable=self.blank_var, from_=0.2, to=10.0, increment=0.1, font=e_font, width=10).grid(row=r, column=1, **pad); r+=1
+        # ── Section 2: Stimulus ──
+        grp_stim = ttk.LabelFrame(parent, text="Stimulus"); grp_stim.pack(fill="x", padx=10, pady=5)
+        r = 0
+        ttk.Label(grp_stim, text="Stimulus Duration (s):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(grp_stim, textvariable=self.stim_var, from_=0.5, to=30.0, increment=0.1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
 
-        ttk.Label(parent, text="Circle Radius (px):", font=l_font).grid(row=r, sticky="w", **pad)
-        ttk.Spinbox(parent, textvariable=self.rad_var, from_=50, to=800, increment=10, font=e_font, width=10).grid(row=r, column=1, **pad); r+=1
+        ttk.Label(grp_stim, text="Pass Duration (s):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(grp_stim, textvariable=self.pass_dur_var, from_=0.1, to=10.0, increment=0.1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
 
-        # Colors
+        ttk.Label(grp_stim, text="Blank Duration (s):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(grp_stim, textvariable=self.blank_var, from_=0.2, to=10.0, increment=0.1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
+
+        ttk.Label(grp_stim, text="Circle Radius (px):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(grp_stim, textvariable=self.rad_var, from_=50, to=800, increment=10, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
+
+        rot_frame = ttk.Frame(grp_stim)
+        rot_frame.grid(row=r, column=0, columnspan=3, sticky="w", **pad)
+        ttk.Checkbutton(rot_frame, text="Rotate Stimulus", variable=self.rotate_var).pack(side="left")
+        ttk.Label(rot_frame, text="Speed (deg/s):", font=l_font).pack(side="left", padx=(20, 5))
+        ttk.Spinbox(rot_frame, textvariable=self.rot_speed_var, from_=0, to=2000, increment=10, width=8).pack(side="left")
+
+        # ── Section 3: Colors & Display ──
+        grp_color = ttk.LabelFrame(parent, text="Colors & Display"); grp_color.pack(fill="x", padx=10, pady=5)
+        r = 0
+
         def choose_color(tv):
             c = colorchooser.askcolor()[0]
             if c: tv.set(f"{int(c[0])},{int(c[1])},{int(c[2])}")
 
-        ttk.Label(parent, text="Bright Color:", font=l_font).grid(row=r, sticky="w", **pad)
-        ttk.Entry(parent, textvariable=self.color_light_var, font=e_font, width=15).grid(row=r, column=1, **pad)
-        ttk.Button(parent, text="Pick", command=lambda: choose_color(self.color_light_var)).grid(row=r, column=2, **pad); r+=1
-        
-        # Gaze Marker Toggle and Paper Color Mode
-        gaze_frame = ttk.Frame(parent)
-        gaze_frame.grid(row=r, column=1, sticky="w", **pad)
-        ttk.Checkbutton(gaze_frame, text="Show Gaze Marker during Test", variable=self.show_gaze_marker_var).pack(side="left")
-        ttk.Checkbutton(gaze_frame, text="Paper Color", variable=self.paper_color_var).pack(side="left", padx=(20, 0))
-        r += 1
+        ttk.Label(grp_color, text="Bright Color:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Entry(grp_color, textvariable=self.color_light_var, font=e_font, width=15).grid(row=r, column=1, sticky="w", **pad)
+        ttk.Button(grp_color, text="Pick", command=lambda: choose_color(self.color_light_var)).grid(row=r, column=2, **pad); r += 1
 
-        ttk.Label(parent, text="Dark Color:", font=l_font).grid(row=r, sticky="w", **pad)
-        ttk.Entry(parent, textvariable=self.color_dark_var, font=e_font, width=15).grid(row=r, column=1, **pad)
-        ttk.Button(parent, text="Pick", command=lambda: choose_color(self.color_dark_var)).grid(row=r, column=2, **pad); r+=1
+        ttk.Label(grp_color, text="Dark Color:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Entry(grp_color, textvariable=self.color_dark_var, font=e_font, width=15).grid(row=r, column=1, sticky="w", **pad)
+        ttk.Button(grp_color, text="Pick", command=lambda: choose_color(self.color_dark_var)).grid(row=r, column=2, **pad); r += 1
 
-        ttk.Label(parent, text="Bg Color:", font=l_font).grid(row=r, sticky="w", **pad)
-        ttk.Entry(parent, textvariable=self.bg_color_var, font=e_font, width=15).grid(row=r, column=1, **pad)
-        ttk.Button(parent, text="Pick", command=lambda: choose_color(self.bg_color_var)).grid(row=r, column=2, **pad); r+=1
+        ttk.Label(grp_color, text="Background Color:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Entry(grp_color, textvariable=self.bg_color_var, font=e_font, width=15).grid(row=r, column=1, sticky="w", **pad)
+        ttk.Button(grp_color, text="Pick", command=lambda: choose_color(self.bg_color_var)).grid(row=r, column=2, **pad); r += 1
 
-        # Screen & Rotation
-        ttk.Label(parent, text="Screen W (cm):", font=l_font).grid(row=r, sticky="w", **pad)
-        ttk.Spinbox(parent, textvariable=self.scr_width_cm_var, from_=10, to=300, increment=0.5, font=e_font).grid(row=r, column=1, **pad); r+=1
-        
-        ttk.Label(parent, text="View Dist (cm):", font=l_font).grid(row=r, sticky="w", **pad)
-        ttk.Spinbox(parent, textvariable=self.view_dist_cm_var, from_=10, to=300, increment=1, font=e_font).grid(row=r, column=1, **pad); r+=1
+        ttk.Checkbutton(grp_color, text="Paper Color Mode", variable=self.paper_color_var).grid(row=r, column=0, columnspan=3, sticky="w", **pad)
 
-        ttk.Checkbutton(parent, text="Rotate Stimulus", variable=self.rotate_var).grid(row=r, column=0, sticky="w", **pad)
-        ttk.Label(parent, text="Speed (d/s):", font=l_font).grid(row=r, column=1, sticky="e")
-        ttk.Spinbox(parent, textvariable=self.rot_speed_var, from_=0, to=2000, increment=10, width=8).grid(row=r, column=2, sticky="w"); r+=1
-        
-        # Inter-trial
-        ttk.Label(parent, text="Inter-trial Img:", font=l_font).grid(row=r, sticky="w", **pad)
-        img_frame = ttk.Frame(parent); img_frame.grid(row=r, column=1, sticky="w", **pad)
+        # ── Section 4: Screen & Viewing ──
+        grp_screen = ttk.LabelFrame(parent, text="Screen & Viewing"); grp_screen.pack(fill="x", padx=10, pady=5)
+        r = 0
+        ttk.Label(grp_screen, text="Screen Width (cm):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(grp_screen, textvariable=self.scr_width_cm_var, from_=10, to=300, increment=0.5, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
+
+        ttk.Label(grp_screen, text="Viewing Distance (cm):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(grp_screen, textvariable=self.view_dist_cm_var, from_=10, to=300, increment=1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad)
+
+        # ── Section 5: Inter-trial ──
+        grp_inter = ttk.LabelFrame(parent, text="Inter-trial"); grp_inter.pack(fill="x", padx=10, pady=5)
+        r = 0
+        ttk.Label(grp_inter, text="Image:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        img_frame = ttk.Frame(grp_inter); img_frame.grid(row=r, column=1, sticky="w", **pad)
         ttk.Entry(img_frame, textvariable=self.interval_img_path_var, font=e_font, width=30).pack(side="left")
         def _browse_img():
             p = filedialog.askopenfilename(filetypes=[("Images", "*.png;*.jpg;*.jpeg;*.bmp"),("All","*.*")])
             if p: self.interval_img_path_var.set(p)
-        ttk.Button(parent, text="...", command=_browse_img, width=4).grid(row=r, column=2, **pad); r+=1
-        
-        ttk.Label(parent, text="Inter-trial Dur (s):", font=l_font).grid(row=r, sticky="w", **pad)
-        ttk.Spinbox(parent, textvariable=self.interval_img_dur_var, from_=0.2, to=10, increment=0.1, font=e_font).grid(row=r, column=1, **pad); r+=1
-        
-        ttk.Label(parent, text="Bg Hold Dur (s):", font=l_font).grid(row=r, sticky="w", **pad)
-        ttk.Spinbox(parent, textvariable=self.bg_after_inter_dur_var, from_=0, to=10, increment=0.1, font=e_font).grid(row=r, column=1, **pad); r+=1
+        ttk.Button(img_frame, text="...", command=_browse_img, width=4).pack(side="left", padx=5); r += 1
+
+        ttk.Label(grp_inter, text="Image Duration (s):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(grp_inter, textvariable=self.interval_img_dur_var, from_=0.2, to=10, increment=0.1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
+
+        ttk.Label(grp_inter, text="Background Hold (s):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(grp_inter, textvariable=self.bg_after_inter_dur_var, from_=0, to=10, increment=0.1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad)
 
     def build_sol_tab(self, parent, l_font, e_font):
         pad = self.ui_pad  # Use dynamic padding
@@ -2223,17 +2262,15 @@ Controls: SPACE = Record point, Q = Cancel"""
 
     def build_rec_tab(self, parent, l_font, e_font):
         pad = self.ui_pad  # Use dynamic padding
+
+        grp_rec = ttk.LabelFrame(parent, text="Recording Options"); grp_rec.pack(fill="x", padx=10, pady=5)
         r = 0
-        
-        ttk.Label(parent, text="Recording Resolution:", font=l_font).grid(row=r, sticky="w", **pad)
-        ttk.Combobox(parent, textvariable=self.rec_resolution_var, values=["Original", "1920x1080", "1280x720"], state="readonly", font=e_font).grid(row=r, column=1, **pad); r+=1
-        
-        ttk.Combobox(parent, textvariable=self.rec_resolution_var, values=["Original", "1920x1080", "1280x720"], state="readonly", font=e_font).grid(row=r, column=1, **pad); r+=1
-        
-        # 1. Webcam Recording
-        ttk.Checkbutton(parent, text="Record Webcam Data (Video & Gaze)", variable=self.rec_webcam_var).grid(row=r, column=0, columnspan=2, sticky="w", **pad); r+=1
-        
-        # 2. Sol Recording
+
+        ttk.Label(grp_rec, text="Resolution:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Combobox(grp_rec, textvariable=self.rec_resolution_var, values=["Original", "1920x1080", "1280x720"], state="readonly", font=e_font).grid(row=r, column=1, sticky="w", **pad); r += 1
+
+        ttk.Checkbutton(grp_rec, text="Record Webcam Data (Video & Gaze)", variable=self.rec_webcam_var).grid(row=r, column=0, columnspan=2, sticky="w", **pad); r += 1
+
         def _on_sol_rec_change(*args):
              if not self.rec_sol_data_var.get():
                  self.rec_sol_raw_video_var.set(False)
@@ -2243,16 +2280,15 @@ Controls: SPACE = Record point, Q = Cancel"""
 
         self.rec_sol_data_var.trace_add("write", _on_sol_rec_change)
 
-        ttk.Checkbutton(parent, text="Record Sol Glasses Data (Gaze)", variable=self.rec_sol_data_var).grid(row=r, column=0, columnspan=2, sticky="w", **pad); r+=1
-        
-        # Indented Option
-        f_indent = ttk.Frame(parent); f_indent.grid(row=r, column=0, columnspan=2, sticky="w", padx=(30, 10))
+        ttk.Checkbutton(grp_rec, text="Record Sol Glasses Data (Gaze)", variable=self.rec_sol_data_var).grid(row=r, column=0, columnspan=2, sticky="w", **pad); r += 1
+
+        f_indent = ttk.Frame(grp_rec); f_indent.grid(row=r, column=0, columnspan=2, sticky="w", padx=(30, 10))
         self.chk_sol_raw = ttk.Checkbutton(f_indent, text="Export Raw Sol Video", variable=self.rec_sol_raw_video_var)
         self.chk_sol_raw.pack(side="left")
-        _on_sol_rec_change() # Init state
-        r+=1
+        _on_sol_rec_change()  # Init state
+        r += 1
 
-        ttk.Label(parent, text="* Screen Recording is enabled if Webcam or Sol is recorded.", font=("Arial", 9, "italic")).grid(row=r, column=0, columnspan=2, **pad)
+        ttk.Label(grp_rec, text="* Screen Recording is enabled if Webcam or Sol is recorded.", font=("Arial", 9, "italic")).grid(row=r, column=0, columnspan=2, sticky="w", **pad)
 
 
     def parse_rgb(self, s, default=(127,127,127)):
@@ -3099,75 +3135,89 @@ def run_test(cfg, sol_context=None):
     _display_gaze = [None]
 
     def process_and_draw_gaze(surface):
-        """Process Sol gaze data and draw gaze marker on the surface if enabled.
-        Called from interval screens, feedback screens, etc. to show gaze continuously."""
-        if not cfg['enable_sol'] or not sol_connector or not sol_projector:
-            return
-        # Submit scene frame for pose detection
-        sol_frame_numpy = get_sol_frame()
-        if sol_frame_numpy is not None:
-            try:
-                sol_projector.submit_frame_for_pose(sol_frame_numpy)
-            except Exception:
+        """Process gaze data and draw gaze marker on the surface if enabled.
+        Called from interval screens, feedback screens, etc. to show gaze continuously.
+        Respects cfg['eval_source'] to show the correct gaze source."""
+        eval_source = cfg.get('eval_source', 'Webcam')
+
+        # --- Webcam gaze ---
+        if eval_source == "Webcam":
+            if gf:
+                gi = gf.get_gaze_info()
+                if gi and getattr(gi, 'status', False):
+                    coords = getattr(gi, 'filtered_gaze_coordinates', None) or getattr(gi, 'gaze_coordinates', None)
+                    if coords:
+                        _display_gaze[0] = (int(coords[0]), int(coords[1]))
+        # --- Sol gaze ---
+        else:
+            if not cfg['enable_sol'] or not sol_connector or not sol_projector:
                 pass
-        # Drain gaze queue to get latest
-        latest_gaze = None
-        if sol_gaze_queue:
-            for _ in range(20):
-                try:
-                    latest_gaze = sol_gaze_queue.get_nowait()
-                except queue.Empty:
-                    break
-        if latest_gaze:
-            sol_gaze_method = cfg.get('sol_gaze_method', '3D')
-            can_process = False
-            if sol_gaze_method == '2D':
-                can_process = sol_projector.is_homography_valid()
             else:
-                can_process = sol_projector.is_calibrated()
-            if can_process:
-                try:
-                    if not hasattr(latest_gaze, 'combined'):
+                # Submit scene frame for pose detection
+                sol_frame_numpy = get_sol_frame()
+                if sol_frame_numpy is not None:
+                    try:
+                        sol_projector.submit_frame_for_pose(sol_frame_numpy)
+                    except Exception:
                         pass
+                # Drain gaze queue to get latest
+                latest_gaze = None
+                if sol_gaze_queue:
+                    for _ in range(20):
+                        try:
+                            latest_gaze = sol_gaze_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                if latest_gaze:
+                    sol_gaze_method = cfg.get('sol_gaze_method', '3D')
+                    can_process = False
+                    if sol_gaze_method == '2D':
+                        can_process = sol_projector.is_homography_valid()
                     else:
-                        raw_gaze_2d = None
-                        if hasattr(latest_gaze.combined, 'gaze_2d'):
-                            g2d = latest_gaze.combined.gaze_2d
-                            raw_gaze_2d = (g2d.x, g2d.y)
-                        if sol_gaze_method == '2D':
-                            if raw_gaze_2d:
-                                screen_pt = sol_projector.project_gaze_2d_to_screen(raw_gaze_2d)
-                                if screen_pt:
-                                    _display_gaze[0] = screen_pt
-                        else:
-                            if hasattr(latest_gaze, 'left_eye') and hasattr(latest_gaze, 'right_eye'):
-                                left_o = latest_gaze.left_eye.gaze.origin
-                                right_o = latest_gaze.right_eye.gaze.origin
-                                gaze_origin_mm = np.array([
-                                    (left_o.x + right_o.x) / 2.0,
-                                    (left_o.y + right_o.y) / 2.0,
-                                    (left_o.z + right_o.z) / 2.0
-                                ])
-                                g3d = latest_gaze.combined.gaze_3d
-                                gaze_point_mm = np.array([g3d.x, g3d.y, g3d.z])
-                                gaze_direction_vec = gaze_point_mm - gaze_origin_mm
-                                norm = np.linalg.norm(gaze_direction_vec)
-                                if norm > 0:
-                                    gaze_direction_unit = gaze_direction_vec / norm
-                                    if sol_offset is not None:
-                                        gaze_direction_unit = apply_angular_offset(
-                                            gaze_direction_unit,
-                                            sol_offset['pitch_offset_rad'],
-                                            sol_offset['yaw_offset_rad']
-                                        )
-                                    gaze_origin_m = gaze_origin_mm / 1000.0
-                                    screen_pt_m = sol_projector.project_gaze_to_screen(gaze_origin_m, gaze_direction_unit)
-                                    if screen_pt_m is not None:
-                                        pix = sol_projector.physical_to_pixels(screen_pt_m, W, physical_width_m)
-                                        if pix:
-                                            _display_gaze[0] = (int(pix[0]), int(pix[1]))
-                except (AttributeError, Exception):
-                    pass
+                        can_process = sol_projector.is_calibrated()
+                    if can_process:
+                        try:
+                            if not hasattr(latest_gaze, 'combined'):
+                                pass
+                            else:
+                                raw_gaze_2d = None
+                                if hasattr(latest_gaze.combined, 'gaze_2d'):
+                                    g2d = latest_gaze.combined.gaze_2d
+                                    raw_gaze_2d = (g2d.x, g2d.y)
+                                if sol_gaze_method == '2D':
+                                    if raw_gaze_2d:
+                                        screen_pt = sol_projector.project_gaze_2d_to_screen(raw_gaze_2d)
+                                        if screen_pt:
+                                            _display_gaze[0] = screen_pt
+                                else:
+                                    if hasattr(latest_gaze, 'left_eye') and hasattr(latest_gaze, 'right_eye'):
+                                        left_o = latest_gaze.left_eye.gaze.origin
+                                        right_o = latest_gaze.right_eye.gaze.origin
+                                        gaze_origin_mm = np.array([
+                                            (left_o.x + right_o.x) / 2.0,
+                                            (left_o.y + right_o.y) / 2.0,
+                                            (left_o.z + right_o.z) / 2.0
+                                        ])
+                                        g3d = latest_gaze.combined.gaze_3d
+                                        gaze_point_mm = np.array([g3d.x, g3d.y, g3d.z])
+                                        gaze_direction_vec = gaze_point_mm - gaze_origin_mm
+                                        norm = np.linalg.norm(gaze_direction_vec)
+                                        if norm > 0:
+                                            gaze_direction_unit = gaze_direction_vec / norm
+                                            if sol_offset is not None:
+                                                gaze_direction_unit = apply_angular_offset(
+                                                    gaze_direction_unit,
+                                                    sol_offset['pitch_offset_rad'],
+                                                    sol_offset['yaw_offset_rad']
+                                                )
+                                            gaze_origin_m = gaze_origin_mm / 1000.0
+                                            screen_pt_m = sol_projector.project_gaze_to_screen(gaze_origin_m, gaze_direction_unit)
+                                            if screen_pt_m is not None:
+                                                pix = sol_projector.physical_to_pixels(screen_pt_m, W, physical_width_m)
+                                                if pix:
+                                                    _display_gaze[0] = (int(pix[0]), int(pix[1]))
+                        except (AttributeError, Exception):
+                            pass
         # Draw gaze marker
         if cfg.get('show_gaze_marker', True) and _display_gaze[0] is not None:
             gx, gy = _display_gaze[0]
@@ -3635,7 +3685,10 @@ def run_test(cfg, sol_context=None):
 
         # Pass/Fail Feedback
         # Seed display gaze with trial's last position to prevent flash of incorrect gaze
-        _display_gaze[0] = sol_gaze_pt
+        if cfg.get('eval_source', 'Webcam') == "Webcam":
+            _display_gaze[0] = webcam_gaze_pt
+        else:
+            _display_gaze[0] = sol_gaze_pt
         fb_text = "PASS" if passed else "FAIL"
         fb_color = (0, 255, 0) if passed else (255, 0, 0)
         fb_surf = feedback_font.render(fb_text, True, fb_color)

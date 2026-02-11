@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 PyInstaller spec file for VA_center_opt.py
-To build: pyinstaller VA_center_opt.spec
+To build: python -m PyInstaller --clean -y VA_center_opt.spec
 """
 
 import sys
@@ -10,8 +10,13 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
 
-# Collect all submodules
+# --- Apply workarounds (must be before Analysis) ---
+import pyinstaller_helpers
+pyinstaller_helpers.patch_dll_discovery()
+
+# ===================== Hidden imports =====================
 hiddenimports = [
+    # gazefollower package
     'gazefollower',
     'gazefollower.camera',
     'gazefollower.camera.Camera',
@@ -25,8 +30,18 @@ hiddenimports = [
     'gazefollower.misc',
     'gazefollower.logger',
     'gazefollower.ui',
+    # Local modules
     'recorder',
     'sol_tracker',
+    'sol_offset_calibration',
+    'sol_2d_offset_calibration',
+    # Sol SDK
+    'ganzin',
+    'ganzin.sol_sdk',
+    'ganzin.sol_sdk.asynchronous',
+    'ganzin.sol_sdk.asynchronous.async_client',
+    'ganzin.sol_sdk.common_models',
+    # Standard / third-party
     'mediapipe',
     'cv2',
     'pygame',
@@ -35,9 +50,18 @@ hiddenimports = [
     'PIL.ImageTk',
     'tkinter',
     'tkinter.ttk',
+    'tkinter.filedialog',
+    'tkinter.messagebox',
+    'tkinter.colorchooser',
     'numpy',
     'pandas',
     'scipy',
+    'asyncio',
+    'multiprocessing',
+    'pickle',
+    'base64',
+    'ctypes',
+    'faulthandler',
     # MediaPipe dependencies
     'matplotlib',
     'matplotlib.pyplot',
@@ -45,31 +69,42 @@ hiddenimports = [
     'matplotlib.backends.backend_agg',
 ]
 
-# Collect data files from mediapipe and matplotlib
+try:
+    hiddenimports += collect_submodules('ganzin')
+except Exception:
+    pass
+
+# ===================== Data files =====================
 datas = []
 try:
     datas += collect_data_files('mediapipe')
-except:
+except Exception:
     pass
-
 try:
     datas += collect_data_files('matplotlib')
-except:
+except Exception:
+    pass
+try:
+    datas += collect_data_files('ganzin')
+except Exception:
     pass
 
-# Add gazefollower package
 datas += [('gazefollower', 'gazefollower')]
+datas += [
+    ('recorder.py', '.'),
+    ('sol_tracker.py', '.'),
+    ('sol_offset_calibration.py', '.'),
+    ('sol_2d_offset_calibration.py', '.'),
+]
 
-# Add local modules
-datas += [('recorder.py', '.'), ('sol_tracker.py', '.')]
+if os.path.exists('校正圖片選擇'):
+    datas += [('校正圖片選擇', '校正圖片選擇')]
 
-# Add calibration profiles if they exist
-if os.path.exists('calibration_profiles'):
-    datas += [('calibration_profiles', 'calibration_profiles')]
+# ===================== Binaries (manual DLL inclusion) =====================
+binaries = pyinstaller_helpers.collect_manual_binaries()
+datas += pyinstaller_helpers.collect_manual_datas()
 
-# Binaries (empty, but can add DLLs if needed)
-binaries = []
-
+# ===================== Analysis =====================
 a = Analysis(
     ['VA_center_opt.py'],
     pathex=[],
@@ -78,8 +113,8 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
-    excludes=['IPython', 'jupyter'],  # Exclude unnecessary packages (matplotlib needed by mediapipe)
+    runtime_hooks=['hooks/runtime_hook_mediapipe.py'],
+    excludes=['IPython', 'jupyter', 'MNN', '_mnncengine'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -98,13 +133,13 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,  # Set to False to hide console window
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,  # Add path to .ico file if you have one
+    icon=None,
 )
 
 coll = COLLECT(

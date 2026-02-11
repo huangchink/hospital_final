@@ -18,10 +18,8 @@ data/
 ~$*
 *.tmp
 
-# User Calibration Data (Assuming generic folder exists, ignore user subfolders)
-calibration_profiles/*/
-!calibration_profiles/README.md
-!calibration_profiles/.gitkeep
+# User Calibration Data
+calibration_profiles/
 
 # Build Artifacts (PyInstaller)
 build/

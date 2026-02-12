@@ -2992,15 +2992,20 @@ def run_test(cfg, sol_context=None):
         return None
 
     def pump_recorder():
-         # [OPT] Helper to keep recorder buffer fed during blocking setup
+         # [OPT] Helper to keep recorder buffer fed during blocking setup / feedback
          try:
              if recorder and recorder.running:
+                  wg_pt, sol_m, sol_r, sol_rd = collect_gaze_data()
                   sol_f = get_sol_frame() if cfg.get('rec_sol_raw_video') else None
                   wb_f = get_webcam_frame() if cfg.get('rec_webcam') else None
                   rec_screen = cfg.get('rec_webcam') or cfg.get('rec_sol_data')
                   recorder.process_and_record(
                       wb_f,
                       win if rec_screen else None,
+                      webcam_gaze=wg_pt,
+                      sol_mapped_gaze=sol_m if cfg.get('rec_sol_data') else None,
+                      sol_raw_gaze=sol_r if cfg.get('rec_sol_data') else None,
+                      sol_raw_gaze_data=sol_rd if cfg.get('rec_sol_data') else None,
                       sol_frame=sol_f
                   )
          except Exception as e:
@@ -3134,96 +3139,113 @@ def run_test(cfg, sol_context=None):
     # Uses list for mutability in nested function closures.
     _display_gaze = [None]
 
-    def process_and_draw_gaze(surface):
-        """Process gaze data and draw gaze marker on the surface if enabled.
-        Called from interval screens, feedback screens, etc. to show gaze continuously.
-        Respects cfg['eval_source'] to show the correct gaze source."""
+    def collect_gaze_data():
+        """Collect gaze data from all active sources.
+        Returns (webcam_gaze_pt, sol_mapped_pt, sol_raw_pt, sol_raw_data) for recording.
+        Also updates _display_gaze[0] for on-screen marker."""
+        wg_pt = None
+        sol_mapped = None
+        sol_raw = None
+        sol_raw_data = None
         eval_source = cfg.get('eval_source', 'Webcam')
 
         # --- Webcam gaze ---
-        if eval_source == "Webcam":
-            if gf:
+        if gf:
+            try:
                 gi = gf.get_gaze_info()
                 if gi and getattr(gi, 'status', False):
                     coords = getattr(gi, 'filtered_gaze_coordinates', None) or getattr(gi, 'gaze_coordinates', None)
                     if coords:
-                        _display_gaze[0] = (int(coords[0]), int(coords[1]))
-        # --- Sol gaze ---
-        else:
-            if not cfg['enable_sol'] or not sol_connector or not sol_projector:
+                        wg_pt = (int(coords[0]), int(coords[1]))
+                        if eval_source == "Webcam":
+                            _display_gaze[0] = wg_pt
+            except Exception:
                 pass
-            else:
-                # Submit scene frame for pose detection
-                sol_frame_numpy = get_sol_frame()
-                if sol_frame_numpy is not None:
+
+        # --- Sol gaze ---
+        if cfg['enable_sol'] and sol_connector and sol_projector:
+            # Submit scene frame for pose detection
+            sol_frame_numpy = get_sol_frame()
+            if sol_frame_numpy is not None:
+                try:
+                    sol_projector.submit_frame_for_pose(sol_frame_numpy)
+                except Exception:
+                    pass
+            # Drain gaze queue to get latest
+            latest_gaze = None
+            if sol_gaze_queue:
+                for _ in range(20):
                     try:
-                        sol_projector.submit_frame_for_pose(sol_frame_numpy)
-                    except Exception:
-                        pass
-                # Drain gaze queue to get latest
-                latest_gaze = None
-                if sol_gaze_queue:
-                    for _ in range(20):
-                        try:
-                            latest_gaze = sol_gaze_queue.get_nowait()
-                        except queue.Empty:
-                            break
-                if latest_gaze:
-                    sol_gaze_method = cfg.get('sol_gaze_method', '3D')
-                    can_process = False
-                    if sol_gaze_method == '2D':
-                        can_process = sol_projector.is_homography_valid()
-                    else:
-                        can_process = sol_projector.is_calibrated()
-                    if can_process:
-                        try:
-                            if not hasattr(latest_gaze, 'combined'):
-                                pass
-                            else:
-                                raw_gaze_2d = None
-                                if hasattr(latest_gaze.combined, 'gaze_2d'):
-                                    g2d = latest_gaze.combined.gaze_2d
-                                    raw_gaze_2d = (g2d.x, g2d.y)
-                                if sol_gaze_method == '2D':
-                                    if raw_gaze_2d:
-                                        screen_pt = sol_projector.project_gaze_2d_to_screen(raw_gaze_2d)
-                                        if screen_pt:
+                        latest_gaze = sol_gaze_queue.get_nowait()
+                    except queue.Empty:
+                        break
+            if latest_gaze:
+                sol_raw_data = latest_gaze
+                sol_gaze_method = cfg.get('sol_gaze_method', '3D')
+                can_process = False
+                if sol_gaze_method == '2D':
+                    can_process = sol_projector.is_homography_valid()
+                else:
+                    can_process = sol_projector.is_calibrated()
+                if can_process:
+                    try:
+                        if hasattr(latest_gaze, 'combined'):
+                            raw_gaze_2d = None
+                            if hasattr(latest_gaze.combined, 'gaze_2d'):
+                                g2d = latest_gaze.combined.gaze_2d
+                                raw_gaze_2d = (g2d.x, g2d.y)
+                                sol_raw = raw_gaze_2d
+                            if sol_gaze_method == '2D':
+                                if raw_gaze_2d:
+                                    screen_pt = sol_projector.project_gaze_2d_to_screen(raw_gaze_2d)
+                                    if screen_pt:
+                                        sol_mapped = screen_pt
+                                        if eval_source != "Webcam":
                                             _display_gaze[0] = screen_pt
-                                else:
-                                    if hasattr(latest_gaze, 'left_eye') and hasattr(latest_gaze, 'right_eye'):
-                                        left_o = latest_gaze.left_eye.gaze.origin
-                                        right_o = latest_gaze.right_eye.gaze.origin
-                                        gaze_origin_mm = np.array([
-                                            (left_o.x + right_o.x) / 2.0,
-                                            (left_o.y + right_o.y) / 2.0,
-                                            (left_o.z + right_o.z) / 2.0
-                                        ])
-                                        g3d = latest_gaze.combined.gaze_3d
-                                        gaze_point_mm = np.array([g3d.x, g3d.y, g3d.z])
-                                        gaze_direction_vec = gaze_point_mm - gaze_origin_mm
-                                        norm = np.linalg.norm(gaze_direction_vec)
-                                        if norm > 0:
-                                            gaze_direction_unit = gaze_direction_vec / norm
-                                            if sol_offset is not None:
-                                                gaze_direction_unit = apply_angular_offset(
-                                                    gaze_direction_unit,
-                                                    sol_offset['pitch_offset_rad'],
-                                                    sol_offset['yaw_offset_rad']
-                                                )
-                                            gaze_origin_m = gaze_origin_mm / 1000.0
-                                            screen_pt_m = sol_projector.project_gaze_to_screen(gaze_origin_m, gaze_direction_unit)
-                                            if screen_pt_m is not None:
-                                                pix = sol_projector.physical_to_pixels(screen_pt_m, W, physical_width_m)
-                                                if pix:
-                                                    _display_gaze[0] = (int(pix[0]), int(pix[1]))
-                        except (AttributeError, Exception):
-                            pass
+                            else:
+                                if hasattr(latest_gaze, 'left_eye') and hasattr(latest_gaze, 'right_eye'):
+                                    left_o = latest_gaze.left_eye.gaze.origin
+                                    right_o = latest_gaze.right_eye.gaze.origin
+                                    gaze_origin_mm = np.array([
+                                        (left_o.x + right_o.x) / 2.0,
+                                        (left_o.y + right_o.y) / 2.0,
+                                        (left_o.z + right_o.z) / 2.0
+                                    ])
+                                    g3d = latest_gaze.combined.gaze_3d
+                                    gaze_point_mm = np.array([g3d.x, g3d.y, g3d.z])
+                                    gaze_direction_vec = gaze_point_mm - gaze_origin_mm
+                                    norm = np.linalg.norm(gaze_direction_vec)
+                                    if norm > 0:
+                                        gaze_direction_unit = gaze_direction_vec / norm
+                                        if sol_offset is not None:
+                                            gaze_direction_unit = apply_angular_offset(
+                                                gaze_direction_unit,
+                                                sol_offset['pitch_offset_rad'],
+                                                sol_offset['yaw_offset_rad']
+                                            )
+                                        gaze_origin_m = gaze_origin_mm / 1000.0
+                                        screen_pt_m = sol_projector.project_gaze_to_screen(gaze_origin_m, gaze_direction_unit)
+                                        if screen_pt_m is not None:
+                                            pix = sol_projector.physical_to_pixels(screen_pt_m, W, physical_width_m)
+                                            if pix:
+                                                sol_mapped = (int(pix[0]), int(pix[1]))
+                                                if eval_source != "Webcam":
+                                                    _display_gaze[0] = sol_mapped
+                    except (AttributeError, Exception):
+                        pass
+
+        return wg_pt, sol_mapped, sol_raw, sol_raw_data
+
+    def process_and_draw_gaze(surface):
+        """Collect gaze and draw marker. Returns gaze data for recording."""
+        wg_pt, sol_mapped, sol_raw, sol_raw_data = collect_gaze_data()
         # Draw gaze marker
         if cfg.get('show_gaze_marker', True) and _display_gaze[0] is not None:
             gx, gy = _display_gaze[0]
             if 0 <= gx < W and 0 <= gy < H:
                 pygame.draw.circle(surface, to_rgb_tuple(cfg['gaze_marker_color']),
                                    (gx, gy), cfg['gaze_marker_radius'], cfg['gaze_marker_width'])
+        return wg_pt, sol_mapped, sol_raw, sol_raw_data
 
     def show_interval_center(duration_s):
         t0 = time.time()
@@ -3256,12 +3278,12 @@ def run_test(cfg, sol_context=None):
                         pimg = pygame.image.frombuffer(cv_img.tobytes(), cv_img.shape[1::-1], "RGB")
                         win.blit(pimg, (pos[0], pos[1]))
 
-            # Process and draw gaze marker (continuous tracking)
-            process_and_draw_gaze(win)
+            # Process and draw gaze marker (continuous tracking) + collect data
+            wg_pt, sol_m, sol_r, sol_rd = process_and_draw_gaze(win)
 
             pygame.display.flip()
 
-            # Record
+            # Record with gaze data
             sol_f = get_sol_frame() if cfg.get('rec_sol_raw_video') else None
             wb_f = get_webcam_frame()
             rec_screen = cfg.get('rec_webcam') or cfg.get('rec_sol_data')
@@ -3269,9 +3291,12 @@ def run_test(cfg, sol_context=None):
             recorder.process_and_record(
                 wb_f,
                 win if rec_screen else None,
+                webcam_gaze=wg_pt,
+                sol_mapped_gaze=sol_m if cfg.get('rec_sol_data') else None,
+                sol_raw_gaze=sol_r if cfg.get('rec_sol_data') else None,
+                sol_raw_gaze_data=sol_rd if cfg.get('rec_sol_data') else None,
                 sol_frame=sol_f
             )
-            # [OPT] Restored to 30 FPS for high-rate data collection
             clock.tick(30)
           except Exception as e:
             print(f"[show_interval_center] Error: {e}")
@@ -3293,8 +3318,8 @@ def run_test(cfg, sol_context=None):
                         pimg = pygame.image.frombuffer(cv_img.tobytes(), cv_img.shape[1::-1], "RGB")
                         win.blit(pimg, (pos[0], pos[1]))
 
-            # Process and draw gaze marker (continuous tracking)
-            process_and_draw_gaze(win)
+            # Process and draw gaze marker (continuous tracking) + collect data
+            wg_pt, sol_m, sol_r, sol_rd = process_and_draw_gaze(win)
 
             pygame.display.flip()
 
@@ -3305,6 +3330,10 @@ def run_test(cfg, sol_context=None):
             recorder.process_and_record(
                 wb_f,
                 win if rec_screen else None,
+                webcam_gaze=wg_pt,
+                sol_mapped_gaze=sol_m if cfg.get('rec_sol_data') else None,
+                sol_raw_gaze=sol_r if cfg.get('rec_sol_data') else None,
+                sol_raw_gaze_data=sol_rd if cfg.get('rec_sol_data') else None,
                 sol_frame=sol_f
             )
             clock.tick(60)
@@ -3411,10 +3440,13 @@ def run_test(cfg, sol_context=None):
 
             # 1. Webcam Gaze
             if gf:
-                gi = gf.get_gaze_info()
-                if gi and getattr(gi, 'status', False):
-                    coords = getattr(gi, 'filtered_gaze_coordinates', None) or getattr(gi, 'gaze_coordinates', None)
-                    if coords: webcam_gaze_pt = (int(coords[0]), int(coords[1]))
+                try:
+                    gi = gf.get_gaze_info()
+                    if gi and getattr(gi, 'status', False):
+                        coords = getattr(gi, 'filtered_gaze_coordinates', None) or getattr(gi, 'gaze_coordinates', None)
+                        if coords: webcam_gaze_pt = (int(coords[0]), int(coords[1]))
+                except Exception as e:
+                    print(f"[Webcam] Gaze info error: {e}")
 
                 # Get FaceInfo for landmarks and boxes (from MediaPipe)
                 # We need to call face_alignment.detect() to get the FaceInfo

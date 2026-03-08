@@ -18,10 +18,62 @@ import queue
 import asyncio
 import json
 import traceback
+import ctypes
 from collections import deque
 import tkinter as tk
 from tkinter import ttk, colorchooser, filedialog, messagebox
 from pathlib import Path
+
+
+# [FIX] Windows keyboard layout management - switch to English to ensure
+# keystroke-based controls (q, SPACE, etc.) work regardless of IME state.
+class KeyboardLayoutManager:
+    """Cache current keyboard layout, switch to English, restore on exit."""
+    # English (US) keyboard layout identifier
+    EN_US_LAYOUT = 0x0409
+
+    def __init__(self):
+        self._original_layout = None
+        self._switched = False
+
+    def switch_to_english(self):
+        """Cache current layout and switch to English (US)."""
+        try:
+            user32 = ctypes.windll.user32
+            # GetKeyboardLayout(0) returns the layout for the current thread
+            self._original_layout = user32.GetKeyboardLayout(0)
+            current_lang = self._original_layout & 0xFFFF
+            if current_lang != self.EN_US_LAYOUT:
+                # Load and activate English (US) layout
+                # WM_INPUTLANGCHANGEREQUEST = 0x0050
+                # HWND_BROADCAST = 0xFFFF
+                hkl = user32.LoadKeyboardLayoutW(f"{self.EN_US_LAYOUT:08X}", 0x01)  # KLF_ACTIVATE
+                if hkl:
+                    # Also post to foreground window for immediate effect
+                    hwnd = user32.GetForegroundWindow()
+                    if hwnd:
+                        user32.PostMessageW(hwnd, 0x0050, 0, hkl)
+                    self._switched = True
+                    print(f"[Keyboard] Switched to English (US) from layout 0x{self._original_layout:08X}")
+                else:
+                    print("[Keyboard] Failed to load English layout")
+            else:
+                print("[Keyboard] Already using English layout")
+        except Exception as e:
+            print(f"[Keyboard] Error switching layout: {e}")
+
+    def restore(self):
+        """Restore the original keyboard layout."""
+        if not self._switched or self._original_layout is None:
+            return
+        try:
+            user32 = ctypes.windll.user32
+            # Activate the original layout
+            user32.ActivateKeyboardLayout(self._original_layout, 0)
+            print(f"[Keyboard] Restored original layout 0x{self._original_layout:08X}")
+            self._switched = False
+        except Exception as e:
+            print(f"[Keyboard] Error restoring layout: {e}")
 
 from gazefollower import GazeFollower
 from gazefollower.misc import DefaultConfig
@@ -90,7 +142,6 @@ except ImportError:
 LAST_SETTINGS_FILE = Path(__file__).resolve().parent / "VA_output" / "last_settings_opt.json"
 
 # [NEW] Global Crash Handler
-import ctypes
 def global_exception_handler(exctype, value, tb):
     import traceback
     from datetime import datetime
@@ -1427,12 +1478,18 @@ Controls: SPACE = Record point, Q = Cancel"""
         win = pygame.display.set_mode((screen_w, screen_h), pygame.NOFRAME)
         pygame.display.set_caption("Sol 2D Offset Calibration")
 
-        # Force window to front
-        import ctypes
+        # Force window to front so SPACE key works immediately
         try:
+            user32 = ctypes.windll.user32
             hwnd = pygame.display.get_wm_info()['window']
-            ctypes.windll.user32.SetForegroundWindow(hwnd)
-            ctypes.windll.user32.BringWindowToTop(hwnd)
+            fg_thread = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
+            our_thread = user32.GetCurrentThreadId()
+            if fg_thread != our_thread:
+                user32.AttachThreadInput(fg_thread, our_thread, True)
+            user32.SetForegroundWindow(hwnd)
+            user32.BringWindowToTop(hwnd)
+            if fg_thread != our_thread:
+                user32.AttachThreadInput(fg_thread, our_thread, False)
         except Exception as e:
             print(f"[2D Cal] Could not bring window to front: {e}")
 
@@ -2995,8 +3052,9 @@ def run_test(cfg, sol_context=None):
          # [OPT] Helper to keep recorder buffer fed during blocking setup / feedback
          try:
              if recorder and recorder.running:
-                  wg_pt, sol_m, sol_r, sol_rd = collect_gaze_data()
-                  sol_f = get_sol_frame() if cfg.get('rec_sol_raw_video') else None
+                  wg_pt, sol_m, sol_r, sol_rd, sol_sf = collect_gaze_data()
+                  # Reuse sol scene frame from collect_gaze_data
+                  sol_f = sol_sf if cfg.get('rec_sol_raw_video') else None
                   wb_f = get_webcam_frame() if cfg.get('rec_webcam') else None
                   rec_screen = cfg.get('rec_webcam') or cfg.get('rec_sol_data')
                   recorder.process_and_record(
@@ -3141,12 +3199,13 @@ def run_test(cfg, sol_context=None):
 
     def collect_gaze_data():
         """Collect gaze data from all active sources.
-        Returns (webcam_gaze_pt, sol_mapped_pt, sol_raw_pt, sol_raw_data) for recording.
-        Also updates _display_gaze[0] for on-screen marker."""
+        Returns (webcam_gaze_pt, sol_mapped_pt, sol_raw_pt, sol_raw_data, sol_scene_frame)
+        for recording. Also updates _display_gaze[0] for on-screen marker."""
         wg_pt = None
         sol_mapped = None
         sol_raw = None
         sol_raw_data = None
+        sol_scene_frame = None
         eval_source = cfg.get('eval_source', 'Webcam')
 
         # --- Webcam gaze ---
@@ -3164,8 +3223,9 @@ def run_test(cfg, sol_context=None):
 
         # --- Sol gaze ---
         if cfg['enable_sol'] and sol_connector and sol_projector:
-            # Submit scene frame for pose detection
+            # Submit scene frame for pose detection (also keep for recording)
             sol_frame_numpy = get_sol_frame()
+            sol_scene_frame = sol_frame_numpy
             if sol_frame_numpy is not None:
                 try:
                     sol_projector.submit_frame_for_pose(sol_frame_numpy)
@@ -3234,18 +3294,18 @@ def run_test(cfg, sol_context=None):
                     except (AttributeError, Exception):
                         pass
 
-        return wg_pt, sol_mapped, sol_raw, sol_raw_data
+        return wg_pt, sol_mapped, sol_raw, sol_raw_data, sol_scene_frame
 
     def process_and_draw_gaze(surface):
         """Collect gaze and draw marker. Returns gaze data for recording."""
-        wg_pt, sol_mapped, sol_raw, sol_raw_data = collect_gaze_data()
+        wg_pt, sol_mapped, sol_raw, sol_raw_data, sol_sf = collect_gaze_data()
         # Draw gaze marker
         if cfg.get('show_gaze_marker', True) and _display_gaze[0] is not None:
             gx, gy = _display_gaze[0]
             if 0 <= gx < W and 0 <= gy < H:
                 pygame.draw.circle(surface, to_rgb_tuple(cfg['gaze_marker_color']),
                                    (gx, gy), cfg['gaze_marker_radius'], cfg['gaze_marker_width'])
-        return wg_pt, sol_mapped, sol_raw, sol_raw_data
+        return wg_pt, sol_mapped, sol_raw, sol_raw_data, sol_sf
 
     def show_interval_center(duration_s):
         t0 = time.time()
@@ -3279,12 +3339,12 @@ def run_test(cfg, sol_context=None):
                         win.blit(pimg, (pos[0], pos[1]))
 
             # Process and draw gaze marker (continuous tracking) + collect data
-            wg_pt, sol_m, sol_r, sol_rd = process_and_draw_gaze(win)
+            wg_pt, sol_m, sol_r, sol_rd, sol_sf = process_and_draw_gaze(win)
 
             pygame.display.flip()
 
-            # Record with gaze data
-            sol_f = get_sol_frame() if cfg.get('rec_sol_raw_video') else None
+            # Record with gaze data (reuse sol scene frame from collect_gaze_data)
+            sol_f = sol_sf if cfg.get('rec_sol_raw_video') else None
             wb_f = get_webcam_frame()
             rec_screen = cfg.get('rec_webcam') or cfg.get('rec_sol_data')
 
@@ -3319,11 +3379,12 @@ def run_test(cfg, sol_context=None):
                         win.blit(pimg, (pos[0], pos[1]))
 
             # Process and draw gaze marker (continuous tracking) + collect data
-            wg_pt, sol_m, sol_r, sol_rd = process_and_draw_gaze(win)
+            wg_pt, sol_m, sol_r, sol_rd, sol_sf = process_and_draw_gaze(win)
 
             pygame.display.flip()
 
-            sol_f = get_sol_frame() if cfg.get('rec_sol_raw_video') else None
+            # Reuse sol scene frame from collect_gaze_data
+            sol_f = sol_sf if cfg.get('rec_sol_raw_video') else None
             wb_f = get_webcam_frame() if cfg.get('rec_webcam') else None
             rec_screen = cfg.get('rec_webcam') or cfg.get('rec_sol_data')
 
@@ -3740,10 +3801,26 @@ def run_test(cfg, sol_context=None):
                         win.blit(pimg, (pos[0], pos[1]))
             # Draw feedback text
             win.blit(fb_surf, ((W - fb_surf.get_width()) // 2, (H - fb_surf.get_height()) // 2))
-            # Process and draw gaze marker
-            process_and_draw_gaze(win)
+            # Process and draw gaze marker + collect data (including sol scene frame)
+            wg_pt, sol_m, sol_r, sol_rd, sol_sf = process_and_draw_gaze(win)
             pygame.display.flip()
-            pump_recorder()
+            # Record using data from process_and_draw_gaze (reuse sol scene frame)
+            try:
+                if recorder and recorder.running:
+                    sol_f = sol_sf if cfg.get('rec_sol_raw_video') else None
+                    wb_f = get_webcam_frame() if cfg.get('rec_webcam') else None
+                    rec_screen = cfg.get('rec_webcam') or cfg.get('rec_sol_data')
+                    recorder.process_and_record(
+                        wb_f,
+                        win if rec_screen else None,
+                        webcam_gaze=wg_pt,
+                        sol_mapped_gaze=sol_m if cfg.get('rec_sol_data') else None,
+                        sol_raw_gaze=sol_r if cfg.get('rec_sol_data') else None,
+                        sol_raw_gaze_data=sol_rd if cfg.get('rec_sol_data') else None,
+                        sol_frame=sol_f
+                    )
+            except Exception as e:
+                print(f"[feedback_recorder] Error: {e}")
             clock.tick(30)
 
         # Feedback
@@ -3847,6 +3924,10 @@ if __name__ == '__main__':
         ctypes.windll.user32.SetProcessDPIAware()
     except: pass
 
+    # [FIX] Switch keyboard to English so keystroke controls (q, SPACE, etc.) work
+    kb_manager = KeyboardLayoutManager()
+    kb_manager.switch_to_english()
+
     # [FIX] Init GazeFollower Logger
     try:
         log_dir = Path(__file__).resolve().parent / "logs"
@@ -3912,3 +3993,6 @@ if __name__ == '__main__':
                 except Exception:
                     pass
             break
+
+    # [FIX] Restore original keyboard layout on exit
+    kb_manager.restore()

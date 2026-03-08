@@ -22,6 +22,27 @@ from datetime import datetime
 from typing import Optional, Tuple, Dict, List, Any
 
 
+def force_pygame_window_to_front():
+    """Force the pygame window to the foreground on Windows.
+    Uses AttachThreadInput trick to bypass SetForegroundWindow restrictions."""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        hwnd = pygame.display.get_wm_info()['window']
+        # Get the foreground window's thread and our thread
+        fg_thread = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
+        our_thread = user32.GetCurrentThreadId()
+        # Attach our thread input to the foreground thread to allow focus steal
+        if fg_thread != our_thread:
+            user32.AttachThreadInput(fg_thread, our_thread, True)
+        user32.SetForegroundWindow(hwnd)
+        user32.BringWindowToTop(hwnd)
+        if fg_thread != our_thread:
+            user32.AttachThreadInput(fg_thread, our_thread, False)
+    except Exception as e:
+        print(f"[Focus] Could not bring pygame window to front: {e}")
+
+
 def dir_to_angles(d: np.ndarray) -> Tuple[float, float]:
     """
     Convert a unit direction vector to pitch and yaw angles.
@@ -554,6 +575,9 @@ class SolOffsetCalibrator:
         # Create window on the user's screen (NOFRAME + manual fullscreen for correct monitor)
         win = pygame.display.set_mode((user_w, user_h), pygame.NOFRAME)
         pygame.display.set_caption("Sol Offset Calibration")
+
+        # Force window to front so SPACE key works immediately
+        force_pygame_window_to_front()
 
         # Load target image
         target_surf = None

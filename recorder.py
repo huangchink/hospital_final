@@ -45,6 +45,16 @@ class Recorder:
             "visual_angle_deg", "angular_velocity_dps"
         ])
 
+        # 3. Trial Events Log
+        self.trial_csv_file = open(os.path.join(self.session_dir, "trial_events.csv"), "w", newline="", encoding='utf-8')
+        self.trial_csv_writer = csv.writer(self.trial_csv_file)
+        self.trial_csv_writer.writerow([
+            "trial_number", "cpd", "side",
+            "start_timestamp", "end_timestamp",
+            "result", "stim_x", "stim_y",
+            "eval_source"
+        ])
+
         self.frame_count = 0
         self.running = True
 
@@ -78,6 +88,21 @@ class Recorder:
         w = csv.writer(f)
         w.writerow(["frame_index", "timestamp"])
         return f, w
+
+    def log_trial_event(self, trial_number, cpd, side,
+                        start_timestamp, end_timestamp,
+                        result, stim_x, stim_y, eval_source=""):
+        """Log a trial event to trial_events.csv."""
+        try:
+            self.trial_csv_writer.writerow([
+                trial_number, cpd, side,
+                start_timestamp, end_timestamp,
+                result, stim_x, stim_y,
+                eval_source
+            ])
+            self.trial_csv_file.flush()
+        except Exception as e:
+            print(f"Error writing trial event: {e}")
 
     def process_and_record(self, frame, screen_surface,
                            stim_pos=None,
@@ -416,5 +441,8 @@ class Recorder:
             except: pass
         if self.sol_csv_file:
             try: self.sol_csv_file.close()
+            except: pass
+        if self.trial_csv_file:
+            try: self.trial_csv_file.close()
             except: pass
         print("Recorder Stopped.")

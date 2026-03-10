@@ -1,17 +1,32 @@
+import sys
+import os
+import time
 import cv2
 import pandas as pd
 import numpy as np
-import os
-import time
-import tkinter as tk
-from tkinter import filedialog, messagebox
 
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QSplitter, QPushButton, QLabel, QCheckBox, QListWidget, QListWidgetItem,
+    QFileDialog, QStatusBar, QMenuBar, QGroupBox, QFrame,
+)
+from PyQt6.QtCore import (
+    Qt, QTimer, QMimeData, pyqtSignal, QPoint,
+)
+from PyQt6.QtGui import (
+    QImage, QPainter, QColor, QPen, QBrush, QFont, QDrag, QAction,
+    QShortcut, QKeySequence,
+)
+
+
+# ---------------------------------------------------------------------------
+# VideoController — kept from original (timestamp-based frame seeking)
+# ---------------------------------------------------------------------------
 class VideoController:
     def __init__(self, name, video_path, timestamp_path):
         self.name = name
         self.cap = cv2.VideoCapture(video_path)
-        self.timestamps = []
-        self.frame_map = [] # idx -> timestamp
+        self.timestamps = np.array([])
         self.valid = False
         self.current_frame_idx = -1
         self.last_frame_img = None
@@ -22,13 +37,10 @@ class VideoController:
             self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-            # Load Timestamps
             if os.path.exists(timestamp_path):
                 try:
                     df = pd.read_csv(timestamp_path)
-                    # Expected cols: frame_index, timestamp
                     self.timestamps = df['timestamp'].values
-                    # Normalize later by master start time
                     self.valid = True
                 except Exception as e:
                     print(f"[{name}] Error loading timestamps: {e}")
@@ -43,43 +55,25 @@ class VideoController:
         if not self.valid or not self.timestamps.size:
             return None
 
-        # Find frame index with timestamp <= t
-        # fast check: if next frame is in future, stay current (unless current is None)
-        # Search for index where timestamps[i] <= t
-        # np.searchsorted returns index where element should be inserted to maintain order
-        # side='right' -> index i such that a[:i] <= t < a[i:]
         idx = np.searchsorted(self.timestamps, t, side='right') - 1
         idx = max(0, min(idx, len(self.timestamps) - 1))
 
-        # If valid index
         if idx != self.current_frame_idx:
-            # Seek if difference is large
             if abs(idx - self.current_frame_idx) > 5:
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
                 ret, frame = self.cap.read()
                 if ret:
                     self.last_frame_img = frame
                     self.current_frame_idx = idx
-
-            # Read forward if close
             elif idx > self.current_frame_idx:
-                # Read frames until we hit idx
-                # Optimization: grab() to skip decoding if possible, retrieve() for final?
-                # For small gaps (1-5 frames), reading is fine.
                 while self.current_frame_idx < idx:
                     ret = self.cap.grab()
-                    if not ret: break
+                    if not ret:
+                        break
                     self.current_frame_idx += 1
-
-                # retrieve the actual target frame
                 ret, frame = self.cap.retrieve()
                 if ret:
                     self.last_frame_img = frame
-
-            # If idx < current_frame_idx (rewind small amount via seek, handled by 'large diff' check usually)
-            # Actually abs > 5 covers rewind. If abs <= 5 and idx < current, we seek too.
-            # Correct logic:
-            # If we need to go back, we MUST seek.
             elif idx < self.current_frame_idx:
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
                 ret, frame = self.cap.read()
@@ -90,41 +84,61 @@ class VideoController:
         return self.last_frame_img
 
     def release(self):
-        if self.cap: self.cap.release()
+        if self.cap:
+            self.cap.release()
 
-class Replayer:
-    def __init__(self):
+
+# ---------------------------------------------------------------------------
+# PlaybackEngine — manages playback state, session loading, gaze data
+# ---------------------------------------------------------------------------
+class PlaybackEngine(QWidget):
+    time_changed = pyqtSignal(float)
+    session_loaded = pyqtSignal()
+    playback_toggled = pyqtSignal(bool)   # True = playing
+    speed_changed = pyqtSignal(float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.session_dir = None
-        self.controllers = {}
+        self.controllers: dict[str, VideoController] = {}
         self.webcam_gaze_df = None
         self.sol_gaze_df = None
-        self.start_time = 0
-        self.duration = 0
-        self.master_clock = 0
+        self.trial_events_df = None
+        self.start_time = 0.0
+        self.duration = 0.0
+        self.master_clock = 0.0
         self.is_playing = False
         self.playback_speed = 1.0
-        self.should_quit = False
 
-        # For low FPS Sol gaze handling
+        # Sol low-FPS cache
         self.last_valid_sol_gaze = None
         self.last_sol_gaze_time = None
-        self.sol_gaze_timeout = 0.5  # Show last gaze for 500ms
+        self.sol_gaze_timeout = 0.5
 
-        # UI State
-        self.window_name = "NTUH Replayer (Space: Play/Pause, A/D: Seek, Esc: Quit)"
+        self._last_real_time = 0.0
 
-    def select_folder(self):
-        root = tk.Tk()
-        root.withdraw()
-        d = filedialog.askdirectory(title="Select Session Output Directory")
-        root.destroy()
-        return d
+        self._timer = QTimer(self)
+        self._timer.setInterval(16)  # ~60 fps
+        self._timer.timeout.connect(self._tick)
 
-    def load_session(self, directory):
+    # -- Session loading (ported from Replayer.load_session) ----------------
+
+    def load_session(self, directory: str) -> bool:
+        # Release previous
+        for c in self.controllers.values():
+            c.release()
+        self.controllers.clear()
+        self.webcam_gaze_df = None
+        self.sol_gaze_df = None
+        self.trial_events_df = None
+        self.master_clock = 0.0
+        self.last_valid_sol_gaze = None
+        self.last_sol_gaze_time = None
+
         self.session_dir = directory
         print(f"Loading session from: {directory}")
 
-        # Paths
+        # Video paths
         sc_vid = os.path.join(directory, "screen_record.mp4")
         sc_ts  = os.path.join(directory, "screen_video_timestamp.csv")
         wc_vid = os.path.join(directory, "webcam_video.mp4")
@@ -132,38 +146,37 @@ class Replayer:
         so_vid = os.path.join(directory, "sol_video.mp4")
         so_ts  = os.path.join(directory, "sol_video_timestamp.csv")
 
-        # NEW: Updated CSV file names
         webcam_csv = os.path.join(directory, "webcam_gaze_data.csv")
-        sol_csv  = os.path.join(directory, "sol_gaze_data.csv")
+        sol_csv    = os.path.join(directory, "sol_gaze_data.csv")
+        trial_csv  = os.path.join(directory, "trial_events.csv")
 
-        # Init Controllers
-        self.controllers = {}
-        if os.path.exists(sc_vid): self.controllers['screen'] = VideoController("Screen", sc_vid, sc_ts)
-        if os.path.exists(wc_vid): self.controllers['webcam'] = VideoController("Webcam", wc_vid, wc_ts)
-        if os.path.exists(so_vid): self.controllers['sol']    = VideoController("Sol", so_vid, so_ts)
+        if os.path.exists(sc_vid):
+            self.controllers['screen'] = VideoController("Screen", sc_vid, sc_ts)
+        if os.path.exists(wc_vid):
+            self.controllers['webcam'] = VideoController("Webcam", wc_vid, wc_ts)
+        if os.path.exists(so_vid):
+            self.controllers['sol'] = VideoController("Sol", so_vid, so_ts)
 
-        # Determine Global Start Time (min of all streams)
+        # Global start time
         start_times = []
         for c in self.controllers.values():
             if c.valid and len(c.timestamps) > 0:
                 start_times.append(c.timestamps[0])
-
         if not start_times:
             print("Error: No valid timestamp data found.")
             return False
 
         self.start_time = min(start_times)
 
-        # Normalize Video Timestamps
-        max_duration = 0
+        # Normalize
+        max_dur = 0.0
         for c in self.controllers.values():
             c.normalize_timestamps(self.start_time)
             if c.valid and len(c.timestamps) > 0:
-                max_duration = max(max_duration, c.timestamps[-1])
+                max_dur = max(max_dur, c.timestamps[-1])
+        self.duration = max_dur
 
-        self.duration = max_duration
-
-        # Load Data CSVs and Normalize
+        # Gaze CSVs
         if os.path.exists(webcam_csv):
             try:
                 self.webcam_gaze_df = pd.read_csv(webcam_csv)
@@ -175,235 +188,758 @@ class Replayer:
         if os.path.exists(sol_csv):
             try:
                 self.sol_gaze_df = pd.read_csv(sol_csv)
-                # Convert milliseconds to seconds
                 self.sol_gaze_df['timestamp'] = self.sol_gaze_df['pc_timestamp_ms'] / 1000.0
                 self.sol_gaze_df['t_norm'] = self.sol_gaze_df['timestamp'] - self.start_time
                 print(f"Loaded Sol gaze data: {len(self.sol_gaze_df)} samples")
             except Exception as e:
                 print(f"Error loading sol_gaze_data.csv: {e}")
 
-        print(f"Session Loaded. Duration: {self.duration:.2f}s")
+        # Trial events
+        if os.path.exists(trial_csv):
+            try:
+                self.trial_events_df = pd.read_csv(trial_csv)
+                self.trial_events_df['start_norm'] = self.trial_events_df['start_timestamp'] - self.start_time
+                self.trial_events_df['end_norm'] = self.trial_events_df['end_timestamp'] - self.start_time
+                print(f"Loaded trial events: {len(self.trial_events_df)} trials")
+            except Exception as e:
+                print(f"Error loading trial_events.csv: {e}")
+
+        print(f"Session loaded. Duration: {self.duration:.2f}s")
+        self.session_loaded.emit()
         return True
 
-    def get_data_at_time(self, t):
-        """Get gaze data at specific time, handling low FPS Sol data"""
+    # -- Gaze data lookup ---------------------------------------------------
+
+    def get_data_at_time(self, t: float) -> dict:
         res = {}
 
-        # Webcam gaze data
         if self.webcam_gaze_df is not None:
             idx = self.webcam_gaze_df['t_norm'].searchsorted(t, side='right') - 1
-            if idx >= 0 and idx < len(self.webcam_gaze_df):
+            if 0 <= idx < len(self.webcam_gaze_df):
                 res['webcam'] = self.webcam_gaze_df.iloc[idx]
 
-        # Sol gaze data with low FPS handling
         if self.sol_gaze_df is not None:
             idx = self.sol_gaze_df['t_norm'].searchsorted(t, side='right') - 1
-            if idx >= 0 and idx < len(self.sol_gaze_df):
+            if 0 <= idx < len(self.sol_gaze_df):
                 row = self.sol_gaze_df.iloc[idx]
                 data_time = row['t_norm']
-
-                # Check if this is fresh data (within timeout)
                 time_diff = t - data_time
                 if time_diff < self.sol_gaze_timeout:
-                    # Use this gaze data
                     res['sol'] = row
                     self.last_valid_sol_gaze = row
                     self.last_sol_gaze_time = data_time
-                elif self.last_valid_sol_gaze is not None:
-                    # Use cached last valid gaze if not too old
-                    if self.last_sol_gaze_time is not None:
-                        cache_age = t - self.last_sol_gaze_time
-                        if cache_age < self.sol_gaze_timeout:
-                            res['sol'] = self.last_valid_sol_gaze
+                elif self.last_valid_sol_gaze is not None and self.last_sol_gaze_time is not None:
+                    if t - self.last_sol_gaze_time < self.sol_gaze_timeout:
+                        res['sol'] = self.last_valid_sol_gaze
 
         return res
 
-    def run(self):
-        if not self.session_dir:
-            d = self.select_folder()
-            if not d: return
-            if not self.load_session(d): return
+    # -- Playback controls --------------------------------------------------
 
-        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+    def play(self):
+        if not self.is_playing:
+            self.is_playing = True
+            self._last_real_time = time.time()
+            self._timer.start()
+            self.playback_toggled.emit(True)
 
-        last_real_time = time.time()
+    def pause(self):
+        if self.is_playing:
+            self.is_playing = False
+            self._timer.stop()
+            self.playback_toggled.emit(False)
 
-        while not self.should_quit:
-            # Time Control
-            now = time.time()
-            dt = now - last_real_time
-            last_real_time = now
+    def toggle(self):
+        if self.is_playing:
+            self.pause()
+        else:
+            self.play()
 
-            if self.is_playing:
-                self.master_clock += dt * self.playback_speed
-                if self.master_clock > self.duration:
-                    self.master_clock = self.duration
-                    self.is_playing = False
+    def seek(self, t: float):
+        self.master_clock = max(0.0, min(t, self.duration))
+        self._last_real_time = time.time()
+        self.time_changed.emit(self.master_clock)
 
-            # Fetch Frames
-            frames = {}
-            for name, c in self.controllers.items():
-                img = c.get_frame_at_time(self.master_clock)
-                if img is not None:
-                    frames[name] = img
+    def set_speed(self, s: float):
+        self.playback_speed = max(0.1, min(5.0, s))
+        self.speed_changed.emit(self.playback_speed)
 
-            # Compose View
-            # Layout: Screen Main (Left), Webcam (Top Right), Sol (Bottom Right)
-            # Base Canvas 1280x720
-            CANVAS_W, CANVAS_H = 1280, 720
-            # Split: Main 960 width? Or 2/3?
-            MAIN_W = int(CANVAS_W * 0.75) # 960
-            SIDE_W = CANVAS_W - MAIN_W    # 320
-            SIDE_H = CANVAS_H // 2        # 360
+    def restart(self):
+        self.seek(0.0)
 
-            canvas = np.zeros((CANVAS_H, CANVAS_W, 3), dtype=np.uint8)
+    # -- Timer tick ---------------------------------------------------------
 
-            # 1. Screen (Main)
-            if 'screen' in frames:
-                sc = frames['screen']
-                # Resize to fit in MAIN_W x CANVAS_H while keeping aspect ratio
-                h, w = sc.shape[:2]
-                scale = min(MAIN_W/w, CANVAS_H/h)
-                nw, nh = int(w*scale), int(h*scale)
-                sc_resized = cv2.resize(sc, (nw, nh))
+    def _tick(self):
+        now = time.time()
+        dt = now - self._last_real_time
+        self._last_real_time = now
 
-                # Center in Main area
-                y_off = (CANVAS_H - nh) // 2
-                x_off = (MAIN_W - nw) // 2
-                canvas[y_off:y_off+nh, x_off:x_off+nw] = sc_resized
+        self.master_clock += dt * self.playback_speed
+        if self.master_clock >= self.duration:
+            self.master_clock = self.duration
+            self.pause()
 
-                # Overlay Gaze/Events on Screen
-                # Use data at current time
-                data = self.get_data_at_time(self.master_clock)
+        self.time_changed.emit(self.master_clock)
 
-                # Transform coordinates to resized Screen Frame
-                def to_view(x, y):
-                    if w == 0 or h == 0: return 0,0
-                    # x,y are in original screen coords (pixel coords in original frame)
-                    # Map to resized sc_resized
-                    rx = int(x * scale) + x_off
-                    ry = int(y * scale) + y_off
-                    return rx, ry
 
-                # Webcam Gaze (Blue)
-                if 'webcam' in data:
-                    row = data['webcam']
-                    try:
-                        wx = row['webcam_gaze_x']
-                        wy = row['webcam_gaze_y']
-                        if pd.notna(wx) and pd.notna(wy):
-                            vx, vy = to_view(wx, wy)
-                            cv2.circle(canvas, (vx, vy), 10, (255,0,0), 2)  # Blue circle
-                            cv2.putText(canvas, "Webcam", (vx+12, vy), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,0,0), 1)
-                    except Exception as e:
-                        pass
+# ---------------------------------------------------------------------------
+# VideoDisplayWidget — renders one video stream, supports drag-and-drop swap
+# ---------------------------------------------------------------------------
+MIME_STREAM = "application/x-stream-name"
 
-                # Sol Gaze (Green) - using mapped coordinates
-                if 'sol' in data:
-                    row = data['sol']
-                    try:
-                        # Use mapped gaze coordinates (ArUco-based projection)
-                        gx = row['mapped_gaze_x']
-                        gy = row['mapped_gaze_y']
-                        is_valid = row['is_valid']
 
-                        if pd.notna(gx) and pd.notna(gy) and is_valid == 1:
-                            vx, vy = to_view(gx, gy)
-                            cv2.circle(canvas, (vx, vy), 10, (0,255,0), 2)  # Green circle
-                            cv2.putText(canvas, "Sol", (vx+12, vy), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,255,0), 1)
-                    except Exception as e:
-                        pass
+class VideoDisplayWidget(QWidget):
+    stream_swapped = pyqtSignal()  # emitted after a D&D swap so app can rewire
 
-            # 2. Webcam (Top Right)
-            if 'webcam' in frames:
-                wc = frames['webcam']
-                h, w = wc.shape[:2]
-                scale = min(SIDE_W/w, SIDE_H/h)
-                nw, nh = int(w*scale), int(h*scale)
-                wc_resized = cv2.resize(wc, (nw, nh))
+    def __init__(self, stream_name: str, label: str, parent=None):
+        super().__init__(parent)
+        self.stream_name = stream_name
+        self.label = label
+        self._qimage = None
+        self._frame_bgr = None
 
-                y_off = (SIDE_H - nh) // 2
-                x_off = MAIN_W + (SIDE_W - nw) // 2
-                canvas[y_off:y_off+nh, x_off:x_off+nw] = wc_resized
+        # Gaze overlay data (set externally each tick)
+        self._gaze_points: list[tuple[float, float, QColor, str]] = []
+        # Each entry: (norm_x, norm_y, colour, label)
+        # norm_x/y are in *original frame* pixel coords
 
-                # Label
-                cv2.putText(canvas, "Webcam", (MAIN_W+5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+        self._frame_w = 0
+        self._frame_h = 0
 
-            # 3. Sol (Bottom Right)
-            if 'sol' in frames:
-                so = frames['sol']
-                h, w = so.shape[:2]
-                scale = min(SIDE_W/w, SIDE_H/h)
-                nw, nh = int(w*scale), int(h*scale)
-                so_resized = cv2.resize(so, (nw, nh))
+        self.setAcceptDrops(True)
+        self.setMinimumSize(120, 90)
 
-                y_off = SIDE_H + (SIDE_H - nh) // 2
-                x_off = MAIN_W + (SIDE_W - nw) // 2
-                canvas[y_off:y_off+nh, x_off:x_off+nw] = so_resized
+        self._drag_highlight = False
 
-                # Overlay raw gaze data on Sol video
-                data = self.get_data_at_time(self.master_clock)
-                if 'sol' in data:
-                    row = data['sol']
-                    try:
-                        raw_gx = row['raw_gaze_x']
-                        raw_gy = row['raw_gaze_y']
-                        is_valid = row['is_valid']
+    # -- Frame update -------------------------------------------------------
 
-                        if pd.notna(raw_gx) and pd.notna(raw_gy) and is_valid == 1:
-                            # Transform raw gaze coordinates to canvas position
-                            vx = int(raw_gx * scale) + x_off
-                            vy = int(raw_gy * scale) + y_off
-                            cv2.circle(canvas, (vx, vy), 8, (0, 255, 255), 2)  # Yellow circle
-                            cv2.putText(canvas, "Gaze", (vx+10, vy), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-                    except Exception as e:
-                        pass
+    def set_frame(self, bgr_frame):
+        if bgr_frame is None:
+            self._qimage = None
+            self._frame_bgr = None
+            self.update()
+            return
+        self._frame_bgr = bgr_frame
+        h, w, ch = bgr_frame.shape
+        self._frame_w = w
+        self._frame_h = h
+        rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+        self._qimage = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
+        self.update()
 
-                # Label
-                cv2.putText(canvas, "Sol Glasses", (MAIN_W+5, SIDE_H+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+    def set_gaze_points(self, pts: list):
+        self._gaze_points = pts
 
-            # Timeline Overlay
-            pct = self.master_clock / self.duration if self.duration > 0 else 0
-            cv2.rectangle(canvas, (0, CANVAS_H-20), (CANVAS_W, CANVAS_H), (50,50,50), -1)
-            cv2.rectangle(canvas, (0, CANVAS_H-20), (int(CANVAS_W*pct), CANVAS_H), (0,255,255), -1)
+    # -- Painting -----------------------------------------------------------
 
-            # Status text
-            status_txt = f"{self.master_clock:.1f}s / {self.duration:.1f}s"
-            if self.is_playing:
-                status_txt += " [PLAYING]"
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.rect()
+
+        # Background
+        p.fillRect(rect, QColor(30, 30, 30))
+
+        if self._qimage and not self._qimage.isNull():
+            # Aspect-ratio preserving scale
+            iw, ih = self._qimage.width(), self._qimage.height()
+            scale = min(rect.width() / iw, rect.height() / ih)
+            nw, nh = int(iw * scale), int(ih * scale)
+            x_off = (rect.width() - nw) // 2
+            y_off = (rect.height() - nh) // 2
+
+            scaled = self._qimage.scaled(nw, nh, Qt.AspectRatioMode.KeepAspectRatio,
+                                         Qt.TransformationMode.SmoothTransformation)
+            p.drawImage(x_off, y_off, scaled)
+
+            # Gaze overlays
+            for gx, gy, color, lbl in self._gaze_points:
+                # Map original pixel coords → widget coords
+                vx = int(gx * scale) + x_off
+                vy = int(gy * scale) + y_off
+                pen = QPen(color, 2)
+                p.setPen(pen)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(QPoint(vx, vy), 10, 10)
+                p.setFont(QFont("Arial", 8))
+                p.drawText(vx + 13, vy + 4, lbl)
+        else:
+            p.setPen(QColor(100, 100, 100))
+            p.setFont(QFont("Arial", 14))
+            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"No {self.label}")
+
+        # Label badge
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(0, 0, 0, 140))
+        fm = p.fontMetrics()
+        p.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        tw = fm.horizontalAdvance(self.label) + 12
+        p.drawRoundedRect(4, 4, tw, 22, 4, 4)
+        p.setPen(QColor(255, 255, 255))
+        p.drawText(10, 19, self.label)
+
+        # Drag highlight
+        if self._drag_highlight:
+            p.setPen(QPen(QColor(0, 170, 255), 3))
+            p.setBrush(QColor(0, 170, 255, 40))
+            p.drawRect(rect.adjusted(1, 1, -1, -1))
+
+        p.end()
+
+    # -- Drag & Drop --------------------------------------------------------
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setData(MIME_STREAM, self.stream_name.encode())
+            drag.setMimeData(mime)
+            drag.exec(Qt.DropAction.MoveAction)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(MIME_STREAM):
+            src_name = bytes(event.mimeData().data(MIME_STREAM)).decode()
+            if src_name != self.stream_name:
+                event.acceptProposedAction()
+                self._drag_highlight = True
+                self.update()
+
+    def dragLeaveEvent(self, event):
+        self._drag_highlight = False
+        self.update()
+
+    def dropEvent(self, event):
+        self._drag_highlight = False
+        src_name = bytes(event.mimeData().data(MIME_STREAM)).decode()
+        # Find the source widget — the drag originator
+        src_widget = event.source()
+        if isinstance(src_widget, VideoDisplayWidget) and src_widget is not self:
+            # Swap stream names and labels
+            src_widget.stream_name, self.stream_name = self.stream_name, src_widget.stream_name
+            src_widget.label, self.label = self.label, src_widget.label
+            self.stream_swapped.emit()
+            src_widget.stream_swapped.emit()
+        event.acceptProposedAction()
+        self.update()
+
+
+# ---------------------------------------------------------------------------
+# TimelineWidget — custom painted timeline with trial markers
+# ---------------------------------------------------------------------------
+class TimelineWidget(QWidget):
+    seek_requested = pyqtSignal(float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(50)
+        self.setMouseTracking(True)
+
+        self._duration = 0.0
+        self._current_time = 0.0
+        self._trials = []  # list of (start_norm, end_norm, result_str, trial_num, cpd)
+        self._hover_trial = None
+        self._scrubbing = False
+
+    def set_duration(self, d: float):
+        self._duration = d
+        self.update()
+
+    def set_time(self, t: float):
+        self._current_time = t
+        self.update()
+
+    def set_trials(self, trials: list):
+        self._trials = trials
+        self.update()
+
+    # -- Coordinate helpers -------------------------------------------------
+
+    def _time_to_x(self, t: float) -> int:
+        if self._duration <= 0:
+            return 0
+        margin = 8
+        usable = self.width() - 2 * margin
+        return margin + int((t / self._duration) * usable)
+
+    def _x_to_time(self, x: int) -> float:
+        margin = 8
+        usable = self.width() - 2 * margin
+        t = ((x - margin) / usable) * self._duration if usable > 0 else 0.0
+        return max(0.0, min(t, self._duration))
+
+    # -- Painting -----------------------------------------------------------
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+
+        # Background
+        p.fillRect(0, 0, w, h, QColor(40, 40, 40))
+
+        bar_y = 18
+        bar_h = 18
+        margin = 8
+        usable = w - 2 * margin
+
+        # Track background
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(70, 70, 70))
+        p.drawRoundedRect(margin, bar_y, usable, bar_h, 4, 4)
+
+        # Trial markers
+        for (ts, te, result, tnum, cpd) in self._trials:
+            x1 = self._time_to_x(ts)
+            x2 = self._time_to_x(te)
+            tw = max(x2 - x1, 3)
+            color = QColor(76, 175, 80, 140) if result == "PASS" else QColor(244, 67, 54, 140)
+            p.setBrush(color)
+            p.drawRoundedRect(x1, bar_y, tw, bar_h, 2, 2)
+
+        # Progress fill
+        if self._duration > 0:
+            px = self._time_to_x(self._current_time)
+            p.setBrush(QColor(0, 188, 212, 200))
+            fill_w = px - margin
+            if fill_w > 0:
+                p.drawRoundedRect(margin, bar_y, fill_w, bar_h, 4, 4)
+
+            # Playhead
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255))
+            p.drawEllipse(QPoint(px, bar_y + bar_h // 2), 6, 6)
+
+        # Time text
+        p.setPen(QColor(200, 200, 200))
+        p.setFont(QFont("Consolas", 9))
+        cur = self._format_time(self._current_time)
+        dur = self._format_time(self._duration)
+        p.drawText(margin, h - 4, f"{cur} / {dur}")
+
+        # Hover tooltip
+        if self._hover_trial is not None:
+            ts, te, result, tnum, cpd = self._hover_trial
+            tip = f"Trial {tnum}  CPD: {cpd}  {result}"
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0, 200))
+            tw = p.fontMetrics().horizontalAdvance(tip) + 12
+            mouse_x = self.mapFromGlobal(self.cursor().pos()).x()
+            tx = min(mouse_x, w - tw - 4)
+            p.drawRoundedRect(tx, 0, tw, 16, 3, 3)
+            p.setPen(QColor(255, 255, 255))
+            p.drawText(tx + 6, 12, tip)
+
+        p.end()
+
+    @staticmethod
+    def _format_time(s: float) -> str:
+        m = int(s) // 60
+        sec = s - m * 60
+        return f"{m}:{sec:05.2f}"
+
+    # -- Mouse interaction --------------------------------------------------
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._scrubbing = True
+            self.seek_requested.emit(self._x_to_time(event.pos().x()))
+
+    def mouseMoveEvent(self, event):
+        if self._scrubbing:
+            self.seek_requested.emit(self._x_to_time(event.pos().x()))
+        # Hover trial detection
+        t = self._x_to_time(event.pos().x())
+        found = None
+        for trial in self._trials:
+            if trial[0] <= t <= trial[1]:
+                found = trial
+                break
+        if found != self._hover_trial:
+            self._hover_trial = found
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        self._scrubbing = False
+
+    def leaveEvent(self, event):
+        self._hover_trial = None
+        self.update()
+
+
+# ---------------------------------------------------------------------------
+# TransportControls — play/pause, speed buttons
+# ---------------------------------------------------------------------------
+class TransportControls(QWidget):
+    def __init__(self, engine: PlaybackEngine, parent=None):
+        super().__init__(parent)
+        self.engine = engine
+        self.setFixedHeight(40)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+
+        self.play_btn = QPushButton("Play")
+        self.play_btn.setFixedWidth(80)
+        self.play_btn.clicked.connect(self.engine.toggle)
+
+        self.speed_down = QPushButton("-")
+        self.speed_down.setFixedWidth(32)
+        self.speed_down.clicked.connect(lambda: self.engine.set_speed(self.engine.playback_speed - 0.25))
+
+        self.speed_label = QLabel("1.00x")
+        self.speed_label.setFixedWidth(52)
+        self.speed_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.speed_up = QPushButton("+")
+        self.speed_up.setFixedWidth(32)
+        self.speed_up.clicked.connect(lambda: self.engine.set_speed(self.engine.playback_speed + 0.25))
+
+        self.time_label = QLabel("0:00.00 / 0:00.00")
+        self.time_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        layout.addWidget(self.play_btn)
+        layout.addSpacing(12)
+        layout.addWidget(QLabel("Speed:"))
+        layout.addWidget(self.speed_down)
+        layout.addWidget(self.speed_label)
+        layout.addWidget(self.speed_up)
+        layout.addStretch()
+        layout.addWidget(self.time_label)
+
+        # Connect signals
+        self.engine.playback_toggled.connect(self._on_playback_toggled)
+        self.engine.speed_changed.connect(self._on_speed_changed)
+
+    def _on_playback_toggled(self, playing: bool):
+        self.play_btn.setText("Pause" if playing else "Play")
+
+    def _on_speed_changed(self, s: float):
+        self.speed_label.setText(f"{s:.2f}x")
+
+    def update_time(self, t: float, duration: float):
+        cur = self._fmt(t)
+        dur = self._fmt(duration)
+        self.time_label.setText(f"{cur} / {dur}")
+
+    @staticmethod
+    def _fmt(s: float) -> str:
+        m = int(s) // 60
+        sec = s - m * 60
+        return f"{m}:{sec:05.2f}"
+
+
+# ---------------------------------------------------------------------------
+# ConfigPanel — session loader, overlay toggles, trial list
+# ---------------------------------------------------------------------------
+class ConfigPanel(QWidget):
+    open_folder_requested = pyqtSignal()
+    overlay_changed = pyqtSignal()
+    trial_selected = pyqtSignal(float)  # seek time
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(260)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        # Session loader
+        grp_session = QGroupBox("Session")
+        gl = QVBoxLayout(grp_session)
+        self.open_btn = QPushButton("Open Folder...")
+        self.open_btn.clicked.connect(self.open_folder_requested.emit)
+        self.path_label = QLabel("No session loaded")
+        self.path_label.setWordWrap(True)
+        self.path_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        gl.addWidget(self.open_btn)
+        gl.addWidget(self.path_label)
+        layout.addWidget(grp_session)
+
+        # Overlay toggles
+        grp_overlay = QGroupBox("Gaze Overlays")
+        ol = QVBoxLayout(grp_overlay)
+        self.chk_webcam_gaze = QCheckBox("Webcam gaze (blue)")
+        self.chk_webcam_gaze.setChecked(True)
+        self.chk_sol_gaze = QCheckBox("Sol mapped gaze (green)")
+        self.chk_sol_gaze.setChecked(True)
+        self.chk_sol_raw = QCheckBox("Sol raw gaze (yellow)")
+        self.chk_sol_raw.setChecked(True)
+        for chk in (self.chk_webcam_gaze, self.chk_sol_gaze, self.chk_sol_raw):
+            chk.stateChanged.connect(lambda _: self.overlay_changed.emit())
+            ol.addWidget(chk)
+        layout.addWidget(grp_overlay)
+
+        # Trial list
+        grp_trials = QGroupBox("Trials")
+        tl = QVBoxLayout(grp_trials)
+        self.trial_list = QListWidget()
+        self.trial_list.itemClicked.connect(self._on_trial_clicked)
+        tl.addWidget(self.trial_list)
+        layout.addWidget(grp_trials)
+
+        layout.addStretch()
+
+    def set_session_path(self, path: str):
+        self.path_label.setText(os.path.basename(path))
+        self.path_label.setToolTip(path)
+
+    def populate_trials(self, trials_df):
+        self.trial_list.clear()
+        if trials_df is None:
+            return
+        for _, row in trials_df.iterrows():
+            result = row.get('result', '?')
+            cpd = row.get('cpd', '?')
+            tnum = row.get('trial_number', '?')
+            side = row.get('side', '?')
+            color = "#4CAF50" if result == "PASS" else "#F44336"
+            text = f"#{tnum}  CPD:{cpd}  {side}  {result}"
+            item = QListWidgetItem(text)
+            item.setForeground(QColor(color))
+            item.setData(Qt.ItemDataRole.UserRole, float(row['start_norm']))
+            self.trial_list.addItem(item)
+
+    def _on_trial_clicked(self, item: QListWidgetItem):
+        t = item.data(Qt.ItemDataRole.UserRole)
+        if t is not None:
+            self.trial_selected.emit(t)
+
+
+# ---------------------------------------------------------------------------
+# ReplayerApp — main window
+# ---------------------------------------------------------------------------
+class ReplayerApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("NTUH Eye Tracking Replayer")
+        self.resize(1400, 800)
+
+        # Engine
+        self.engine = PlaybackEngine(self)
+
+        # Central widget
+        central = QWidget()
+        self.setCentralWidget(central)
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        # -- Menu bar -------------------------------------------------------
+        menubar = self.menuBar()
+        file_menu = menubar.addMenu("File")
+        open_action = QAction("Open Session...", self)
+        open_action.setShortcut(QKeySequence("Ctrl+O"))
+        open_action.triggered.connect(self._open_session)
+        file_menu.addAction(open_action)
+        file_menu.addSeparator()
+        exit_action = QAction("Exit", self)
+        exit_action.setShortcut(QKeySequence("Ctrl+Q"))
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        # -- Main splitter (Config | Videos) --------------------------------
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Config panel
+        self.config_panel = ConfigPanel()
+        self.main_splitter.addWidget(self.config_panel)
+
+        # Video area splitter (Main | Side stack)
+        self.video_splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        self.screen_display = VideoDisplayWidget("screen", "Screen")
+        self.video_splitter.addWidget(self.screen_display)
+
+        # Side stack (webcam on top, sol on bottom)
+        self.side_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.webcam_display = VideoDisplayWidget("webcam", "Webcam")
+        self.sol_display = VideoDisplayWidget("sol", "Sol")
+        self.side_splitter.addWidget(self.webcam_display)
+        self.side_splitter.addWidget(self.sol_display)
+        self.video_splitter.addWidget(self.side_splitter)
+
+        # Set initial proportions: main ~70%, side ~30%
+        self.video_splitter.setSizes([700, 300])
+        self.side_splitter.setSizes([250, 250])
+
+        self.main_splitter.addWidget(self.video_splitter)
+        self.main_splitter.setSizes([260, 1140])
+
+        root_layout.addWidget(self.main_splitter, 1)
+
+        # -- Transport controls ---------------------------------------------
+        self.transport = TransportControls(self.engine)
+        root_layout.addWidget(self.transport)
+
+        # -- Timeline -------------------------------------------------------
+        self.timeline = TimelineWidget()
+        root_layout.addWidget(self.timeline)
+
+        # -- Status bar -----------------------------------------------------
+        self.statusBar().showMessage("Ready — Open a session folder to begin")
+
+        # -- Wiring ---------------------------------------------------------
+        self.engine.time_changed.connect(self._on_time_changed)
+        self.engine.session_loaded.connect(self._on_session_loaded)
+        self.timeline.seek_requested.connect(self.engine.seek)
+        self.config_panel.open_folder_requested.connect(self._open_session)
+        self.config_panel.trial_selected.connect(self.engine.seek)
+
+        # Video display widgets list for easy iteration
+        self._displays = [self.screen_display, self.webcam_display, self.sol_display]
+        for d in self._displays:
+            d.stream_swapped.connect(self._on_streams_swapped)
+
+        # -- Keyboard shortcuts ---------------------------------------------
+        QShortcut(QKeySequence(Qt.Key.Key_Space), self).activated.connect(self.engine.toggle)
+        QShortcut(QKeySequence(Qt.Key.Key_A), self).activated.connect(
+            lambda: self.engine.seek(self.engine.master_clock - 1.0))
+        QShortcut(QKeySequence(Qt.Key.Key_D), self).activated.connect(
+            lambda: self.engine.seek(self.engine.master_clock + 1.0))
+        QShortcut(QKeySequence(Qt.Key.Key_S), self).activated.connect(
+            lambda: self.engine.seek(self.engine.master_clock - 5.0))
+        QShortcut(QKeySequence(Qt.Key.Key_W), self).activated.connect(
+            lambda: self.engine.seek(self.engine.master_clock + 5.0))
+        QShortcut(QKeySequence(Qt.Key.Key_R), self).activated.connect(self.engine.restart)
+        QShortcut(QKeySequence(Qt.Key.Key_BracketLeft), self).activated.connect(
+            lambda: self.engine.set_speed(self.engine.playback_speed - 0.25))
+        QShortcut(QKeySequence(Qt.Key.Key_BracketRight), self).activated.connect(
+            lambda: self.engine.set_speed(self.engine.playback_speed + 0.25))
+
+        # -- Stylesheet (dark theme) ----------------------------------------
+        self.setStyleSheet("""
+            QMainWindow, QWidget { background: #1e1e1e; color: #ddd; }
+            QGroupBox { border: 1px solid #555; border-radius: 4px; margin-top: 8px;
+                        padding-top: 14px; font-weight: bold; color: #ccc; }
+            QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }
+            QPushButton { background: #333; border: 1px solid #555; border-radius: 4px;
+                          padding: 4px 10px; color: #ddd; }
+            QPushButton:hover { background: #444; }
+            QPushButton:pressed { background: #555; }
+            QCheckBox { spacing: 6px; color: #ccc; }
+            QListWidget { background: #2a2a2a; border: 1px solid #444; border-radius: 4px;
+                          color: #ddd; font-family: Consolas; font-size: 12px; }
+            QListWidget::item:selected { background: #0078d4; }
+            QLabel { color: #ccc; }
+            QSplitter::handle { background: #444; }
+            QSplitter::handle:horizontal { width: 3px; }
+            QSplitter::handle:vertical { height: 3px; }
+            QStatusBar { background: #252525; color: #888; font-size: 11px; }
+            QMenuBar { background: #2a2a2a; color: #ccc; }
+            QMenuBar::item:selected { background: #0078d4; }
+            QMenu { background: #2a2a2a; color: #ccc; border: 1px solid #555; }
+            QMenu::item:selected { background: #0078d4; }
+        """)
+
+    # -- Session loading ----------------------------------------------------
+
+    def _open_session(self):
+        d = QFileDialog.getExistingDirectory(self, "Select Session Output Directory",
+                                             os.path.join(os.path.dirname(__file__), "VA_output"))
+        if not d:
+            return
+        if self.engine.load_session(d):
+            self.statusBar().showMessage(f"Loaded: {os.path.basename(d)}")
+        else:
+            self.statusBar().showMessage("Failed to load session — no valid timestamps found")
+
+    def _on_session_loaded(self):
+        self.config_panel.set_session_path(self.engine.session_dir)
+        self.timeline.set_duration(self.engine.duration)
+
+        # Populate trial markers on timeline and config list
+        if self.engine.trial_events_df is not None:
+            trials = []
+            for _, row in self.engine.trial_events_df.iterrows():
+                trials.append((
+                    row['start_norm'], row['end_norm'],
+                    row.get('result', '?'), row.get('trial_number', 0),
+                    row.get('cpd', 0),
+                ))
+            self.timeline.set_trials(trials)
+            self.config_panel.populate_trials(self.engine.trial_events_df)
+
+        # Force a frame update at t=0
+        self.engine.time_changed.emit(0.0)
+
+    # -- Per-tick update ----------------------------------------------------
+
+    def _on_time_changed(self, t: float):
+        # Update transport time display
+        self.transport.update_time(t, self.engine.duration)
+        self.timeline.set_time(t)
+
+        # Fetch gaze data once
+        gaze_data = self.engine.get_data_at_time(t)
+
+        # Update each video display
+        for disp in self._displays:
+            name = disp.stream_name
+            ctrl = self.engine.controllers.get(name)
+            if ctrl:
+                frame = ctrl.get_frame_at_time(t)
+                disp.set_frame(frame)
             else:
-                status_txt += " [PAUSED]"
-            cv2.putText(canvas, status_txt, (10, CANVAS_H-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+                disp.set_frame(None)
 
-            cv2.imshow(self.window_name, canvas)
+            # Build gaze points for this display
+            pts = []
+            if name == "screen":
+                # Webcam gaze (blue) on screen
+                if self.config_panel.chk_webcam_gaze.isChecked() and 'webcam' in gaze_data:
+                    row = gaze_data['webcam']
+                    try:
+                        wx, wy = row['webcam_gaze_x'], row['webcam_gaze_y']
+                        if pd.notna(wx) and pd.notna(wy):
+                            pts.append((float(wx), float(wy), QColor(80, 140, 255), "Webcam"))
+                    except Exception:
+                        pass
 
-            # Input
-            key = cv2.waitKey(1 if self.is_playing else 30) & 0xFF
-            if key == 27 or key == ord('q'): # ESC/q
-                self.should_quit = True
-            elif key == 32: # Space
-                self.is_playing = not self.is_playing
-            elif key == ord('a'): # A - rewind 1s
-                self.master_clock = max(0, self.master_clock - 1.0)
-            elif key == ord('d'): # D - forward 1s
-                self.master_clock = min(self.duration, self.master_clock + 1.0)
-            elif key == ord('s'): # S - rewind 5s
-                self.master_clock = max(0, self.master_clock - 5.0)
-            elif key == ord('w'): # W - forward 5s
-                self.master_clock = min(self.duration, self.master_clock + 5.0)
-            elif key == ord('r'): # R - restart
-                self.master_clock = 0
-            elif key == ord('[') or key == ord('-'): # Slow down
-                self.playback_speed = max(0.1, self.playback_speed - 0.1)
-                print(f"Playback speed: {self.playback_speed:.1f}x")
-            elif key == ord(']') or key == ord('='): # Speed up
-                self.playback_speed = min(5.0, self.playback_speed + 0.1)
-                print(f"Playback speed: {self.playback_speed:.1f}x")
+                # Sol mapped gaze (green) on screen
+                if self.config_panel.chk_sol_gaze.isChecked() and 'sol' in gaze_data:
+                    row = gaze_data['sol']
+                    try:
+                        gx, gy = row['mapped_gaze_x'], row['mapped_gaze_y']
+                        valid = row['is_valid']
+                        if pd.notna(gx) and pd.notna(gy) and valid == 1:
+                            pts.append((float(gx), float(gy), QColor(76, 175, 80), "Sol"))
+                    except Exception:
+                        pass
 
-        cv2.destroyAllWindows()
-        for c in self.controllers.values():
+            elif name == "sol":
+                # Sol raw gaze (yellow) on sol video
+                if self.config_panel.chk_sol_raw.isChecked() and 'sol' in gaze_data:
+                    row = gaze_data['sol']
+                    try:
+                        rx, ry = row['raw_gaze_x'], row['raw_gaze_y']
+                        valid = row['is_valid']
+                        if pd.notna(rx) and pd.notna(ry) and valid == 1:
+                            pts.append((float(rx), float(ry), QColor(255, 235, 59), "Gaze"))
+                    except Exception:
+                        pass
+
+            disp.set_gaze_points(pts)
+
+    # -- D&D rewire ---------------------------------------------------------
+
+    def _on_streams_swapped(self):
+        # After a swap, immediately re-render with current time
+        self._on_time_changed(self.engine.master_clock)
+
+    # -- Cleanup ------------------------------------------------------------
+
+    def closeEvent(self, event):
+        self.engine.pause()
+        for c in self.engine.controllers.values():
             c.release()
+        event.accept()
 
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    replayer = Replayer()
-    replayer.run()
+    app = QApplication(sys.argv)
+    window = ReplayerApp()
+    window.show()
+    sys.exit(app.exec())

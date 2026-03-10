@@ -101,6 +101,11 @@ if os.path.exists('校正圖片選擇'):
     datas += [('校正圖片選擇', '校正圖片選擇')]
 if os.path.exists('刺激源圖片選擇'):
     datas += [('刺激源圖片選擇', '刺激源圖片選擇')]
+if os.path.exists(os.path.join('calibration_profiles', 'anonymous_9pt')):
+    datas += [
+        (os.path.join('calibration_profiles', 'anonymous_9pt'),
+         os.path.join('calibration_profiles', 'anonymous_9pt'))
+    ]
 
 # ===================== Binaries (manual DLL inclusion) =====================
 binaries = pyinstaller_helpers.collect_manual_binaries()

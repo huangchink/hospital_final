@@ -2529,11 +2529,19 @@ Controls: SPACE = Record point, Q = Cancel"""
         # Stop webcam preview to release camera before test
         self.stop_preview()
 
-        # Validation
+        # Validation — fallback to anonymous_9pt if no valid calibration profile
         if self.enable_webcam_var.get():
-             if not self.calib_dir_var.get().strip() or not Path(self.calib_dir_var.get().strip()).exists():
-                messagebox.showerror("Error", "Webcam enabled but Calibration folder invalid.")
-                return
+            calib_dir = self.calib_dir_var.get().strip()
+            calib_path = Path(calib_dir) if calib_dir else None
+            if not calib_path or not calib_path.exists() or not (calib_path / "svr_x.xml").exists():
+                # Fallback to default anonymous_9pt profile
+                default_profile = Path(__file__).resolve().parent / "calibration_profiles" / "anonymous_9pt"
+                if default_profile.exists() and (default_profile / "svr_x.xml").exists():
+                    self.calib_dir_var.set(str(default_profile))
+                    print(f"[Webcam] Using default calibration profile: {default_profile}")
+                else:
+                    messagebox.showerror("Error", "Webcam enabled but no valid calibration profile found.")
+                    return
 
         sw_cm = float(self.scr_width_cm_var.get())
         dist_cm = float(self.view_dist_cm_var.get())
@@ -2837,14 +2845,10 @@ def run_test(cfg, sol_context=None):
         if not profile_dir.exists():
             messagebox.showerror("Error", "Calibration folder missing")
             return
-        # [FIX] Sync screen size with Pygame
         dcfg = DefaultConfig()
         dcfg.screen_size = np.array([W, H])
-        
-        # [FIX] Pass Camera ID
         cid = cfg.get('camera_id', 0)
         webcam = WebCamCamera(webcam_id=cid)
-
         calib = SVRCalibration(model_save_path=str(profile_dir))
         gf = GazeFollower(config=dcfg, calibration=calib, camera=webcam)
         if not gf.calibration.has_calibrated:

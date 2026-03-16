@@ -19,21 +19,26 @@ BORDER_PIXEL_WIDTH = 15
 # Margin from screen edge for ArUco markers
 # Must be > status bar height (50px) + buffer to ensure markers are fully visible
 SCREEN_MARGIN_PIXELS = 60
+# Bottom margin is larger: the monitor bezel merges with ArUco black border,
+# eating the white quiet zone and preventing detection.
+SCREEN_MARGIN_BOTTOM_PIXELS = 90
 
 def create_calibration_assets(screen_width, screen_height, aruco_dict, config):
     marker_container_size = config['marker_pattern_size'] + (BORDER_PIXEL_WIDTH * 2)
     marker_positions_px, individual_marker_images = {}, {}
     marker_id_counter = 0
     if config['marker_k'] < 2 or config['marker_n'] < 2: return None, None
+    margin_top = SCREEN_MARGIN_PIXELS
+    margin_bottom = SCREEN_MARGIN_BOTTOM_PIXELS
     spacing_x = (screen_width - 2*SCREEN_MARGIN_PIXELS - marker_container_size) / (config['marker_k'] - 1)
-    spacing_y = (screen_height - 2*SCREEN_MARGIN_PIXELS - marker_container_size) / (config['marker_n'] - 1)
+    spacing_y = (screen_height - margin_top - margin_bottom - marker_container_size) / (config['marker_n'] - 1)
     all_points = []
     for i in range(config['marker_k']):
-        all_points.append((int(SCREEN_MARGIN_PIXELS + i*spacing_x), SCREEN_MARGIN_PIXELS))
-        all_points.append((int(SCREEN_MARGIN_PIXELS + i*spacing_x), int(screen_height - SCREEN_MARGIN_PIXELS - marker_container_size)))
+        all_points.append((int(SCREEN_MARGIN_PIXELS + i*spacing_x), margin_top))
+        all_points.append((int(SCREEN_MARGIN_PIXELS + i*spacing_x), int(screen_height - margin_bottom - marker_container_size)))
     for i in range(1, config['marker_n'] - 1):
-        all_points.append((SCREEN_MARGIN_PIXELS, int(SCREEN_MARGIN_PIXELS + i*spacing_y)))
-        all_points.append((int(screen_width - SCREEN_MARGIN_PIXELS - marker_container_size), int(SCREEN_MARGIN_PIXELS + i*spacing_y)))
+        all_points.append((SCREEN_MARGIN_PIXELS, int(margin_top + i*spacing_y)))
+        all_points.append((int(screen_width - SCREEN_MARGIN_PIXELS - marker_container_size), int(margin_top + i*spacing_y)))
     unique_points = sorted(list(set(all_points)))
     for pos in unique_points:
         marker_positions_px[marker_id_counter] = pos; marker_id_counter += 1
@@ -82,8 +87,8 @@ class ScreenProjector3D:
         self.marker_frame_counter = 0  # Global frame counter
 
         # [Initial Homography Quality] Require minimum frames/markers before accepting first homography
-        self.min_frames_for_init_homography = 30  # Wait at least N frames before accepting initial homography
-        self.min_markers_for_init_homography = 12  # Require at least N unique markers for initial homography
+        self.min_frames_for_init_homography = 10  # Wait at least N frames before accepting initial homography
+        self.min_markers_for_init_homography = 8  # Require at least N unique markers for initial homography
         self.homography_from_cache = False  # Track if homography was restored from cache
 
         # [2D Gaze Smoothing] Smooth the 2D gaze output to reduce jitter
@@ -974,9 +979,13 @@ class SolConnector:
 
     async def _gaze_stream_loop(self, ac):
         print("[SolConnector] Gaze stream loop started.")
+        gaze_count = 0
         try:
             async for data in recv_gaze(ac):
                 if self.stop_event.is_set(): break
+                gaze_count += 1
+                if gaze_count <= 3 or gaze_count % 500 == 0:
+                    print(f"[SolConnector] Gaze #{gaze_count} received: {type(data).__name__}")
                 try:
                     self.gaze_queue.put_nowait(data)
                 except queue.Full:
@@ -993,7 +1002,8 @@ class SolConnector:
             pass  # Normal cancellation
         except Exception as e:
             print(f"[SolConnector] Gaze stream error: {e}")
-        print("[SolConnector] Gaze stream loop finished.")
+            import traceback; traceback.print_exc()
+        print(f"[SolConnector] Gaze stream loop finished. Total received: {gaze_count}")
 
     async def _scene_stream_loop(self, ac):
         print("[SolConnector] Scene stream loop started.")

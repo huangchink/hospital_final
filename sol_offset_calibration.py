@@ -10,6 +10,7 @@ direction vector in the camera frame.
 
 import json
 import os
+import ctypes
 import numpy as np
 import cv2
 import pygame
@@ -194,17 +195,23 @@ def clear_sol_offset(username: str, calibration_dir: Path) -> bool:
 # Calibration point positions (as fraction of screen)
 # Positions are chosen to avoid overlap with ArUco markers at screen edges
 # ArUco markers typically occupy ~100-150px from edges, so we use 0.25-0.75 range
-CALIBRATION_POSITIONS = [
+# Layouts: 1-point (center), 3-point (left/center/right), 5-point (center + 4 corners)
+CALIBRATION_POSITIONS_1 = [
+    ("center", 0.5, 0.5),
+]
+
+CALIBRATION_POSITIONS_3 = [
+    ("left", 0.25, 0.5),
+    ("center", 0.5, 0.5),
+    ("right", 0.75, 0.5),
+]
+
+CALIBRATION_POSITIONS_5 = [
     ("center", 0.5, 0.5),
     ("upper-left", 0.25, 0.25),
     ("upper-right", 0.75, 0.25),
     ("lower-right", 0.75, 0.75),
     ("lower-left", 0.25, 0.75),
-    # Additional positions for more calibration points (9-point pattern)
-    ("top-center", 0.5, 0.25),
-    ("bottom-center", 0.5, 0.75),
-    ("left-center", 0.25, 0.5),
-    ("right-center", 0.75, 0.5),
 ]
 
 
@@ -212,24 +219,25 @@ def get_calibration_positions(num_points: int, screen_width: int, screen_height:
     """
     Get calibration target positions for the given number of points.
 
-    Position order: Center -> Upper-left -> Upper-right -> Bottom-right -> Bottom-left -> (repeat)
+    Supported num_points: 1 (center), 3 (left/center/right), 5 (center + 4 corners).
 
     Args:
-        num_points: Number of calibration points (1-10)
+        num_points: Number of calibration points (1, 3, or 5)
         screen_width: Screen width in pixels
         screen_height: Screen height in pixels
 
     Returns:
         List of position dictionaries with 'name', 'x', 'y' keys
     """
+    if num_points == 1:
+        point_list = CALIBRATION_POSITIONS_1
+    elif num_points == 3:
+        point_list = CALIBRATION_POSITIONS_3
+    else:
+        point_list = CALIBRATION_POSITIONS_5
+
     positions = []
-    for i in range(num_points):
-        idx = i % len(CALIBRATION_POSITIONS)
-        name, fx, fy = CALIBRATION_POSITIONS[idx]
-        # Add cycle number to name if repeating
-        cycle = i // len(CALIBRATION_POSITIONS)
-        if cycle > 0:
-            name = f"{name}_{cycle + 1}"
+    for i, (name, fx, fy) in enumerate(point_list):
         positions.append({
             'name': name,
             'x': int(fx * screen_width),
@@ -623,10 +631,20 @@ class SolOffsetCalibrator:
         debug_interval = 60  # Print every N frames
         loop_count = 0
 
+        # Focus-independent key detection via Win32 API
+        # Allows SPACE/Q to work even when the tester window has focus
+        _prev_space_down = False
+        _prev_q_down = False
+        try:
+            _user32_key = ctypes.windll.user32
+        except Exception:
+            _user32_key = None
+
         while self.running and current_pos_idx < len(positions):
             pos = positions[current_pos_idx]
+            space_pressed = False
 
-            # Handle events
+            # Handle events from pygame (works when user screen has focus)
             for ev in pygame.event.get():
                 if ev.type == pygame.QUIT:
                     self.running = False
@@ -636,25 +654,40 @@ class SolOffsetCalibrator:
                         self.running = False
                         break
                     elif ev.key == pygame.K_SPACE:
-                        # SPACE directly records the calibration point (no click needed)
-                        if latest_gaze is not None and not in_transition:
-                            point_data = self._record_calibration_point(
-                                pos, latest_gaze, user_w, user_h
-                            )
-                            if point_data:
-                                self.calibration_points.append(point_data)
-                                print(f"[Sol Offset] Recorded point {current_pos_idx + 1}/{num_points}: "
-                                      f"pitch_err={np.degrees(point_data['pitch_error_rad']):.2f}deg, "
-                                      f"yaw_err={np.degrees(point_data['yaw_error_rad']):.2f}deg")
-                                # Start transition to next position
-                                transition_start = time.time()
-                                current_pos_idx += 1
-                            else:
-                                print("[Sol Offset] Failed to record point - check ArUco detection")
-                        elif latest_gaze is None:
-                            print("[Sol Offset] Cannot record - no gaze data available")
-                        elif in_transition:
-                            print("[Sol Offset] Wait for transition to complete")
+                        space_pressed = True
+
+            # Focus-independent key detection via Win32 GetAsyncKeyState
+            # Detects key presses regardless of which window has focus
+            if _user32_key and self.running:
+                space_down = bool(_user32_key.GetAsyncKeyState(0x20) & 0x8000)
+                q_down = bool(_user32_key.GetAsyncKeyState(0x51) & 0x8000)
+                if space_down and not _prev_space_down:
+                    space_pressed = True
+                if q_down and not _prev_q_down:
+                    self.running = False
+                _prev_space_down = space_down
+                _prev_q_down = q_down
+
+            # Process SPACE press (from any source)
+            if space_pressed and self.running:
+                if latest_gaze is not None and not in_transition:
+                    point_data = self._record_calibration_point(
+                        pos, latest_gaze, user_w, user_h
+                    )
+                    if point_data:
+                        self.calibration_points.append(point_data)
+                        print(f"[Sol Offset] Recorded point {current_pos_idx + 1}/{num_points}: "
+                              f"pitch_err={np.degrees(point_data['pitch_error_rad']):.2f}deg, "
+                              f"yaw_err={np.degrees(point_data['yaw_error_rad']):.2f}deg")
+                        # Start transition to next position
+                        transition_start = time.time()
+                        current_pos_idx += 1
+                    else:
+                        print("[Sol Offset] Failed to record point - check ArUco detection")
+                elif latest_gaze is None:
+                    print("[Sol Offset] Cannot record - no gaze data available")
+                elif in_transition:
+                    print("[Sol Offset] Wait for transition to complete")
 
             if not self.running:
                 break

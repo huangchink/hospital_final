@@ -35,7 +35,18 @@ OFFSET_MODE_ANGULAR = 'angular'  # Angular offset (head-tilt immune)
 
 # Fallback calibration positions (used when marker positions are not available)
 # Format: (name, x_ratio, y_ratio)
-CALIBRATION_POSITIONS_2D = [
+# Layouts: 1-point (center), 3-point (left/center/right), 5-point (center + 4 corners)
+CALIBRATION_POSITIONS_2D_1 = [
+    ("center", 0.5, 0.5),
+]
+
+CALIBRATION_POSITIONS_2D_3 = [
+    ("left", 0.15, 0.5),
+    ("center", 0.5, 0.5),
+    ("right", 0.85, 0.5),
+]
+
+CALIBRATION_POSITIONS_2D_5 = [
     ("center", 0.5, 0.5),
     ("upper-left", 0.15, 0.22),
     ("upper-right", 0.85, 0.22),
@@ -43,15 +54,20 @@ CALIBRATION_POSITIONS_2D = [
     ("lower-left", 0.15, 0.78),
 ]
 
+# Default (backward compatibility)
+CALIBRATION_POSITIONS_2D = CALIBRATION_POSITIONS_2D_5
+
 
 def compute_safe_calibration_positions(screen_w, screen_h, marker_positions_px,
-                                       marker_container_size, target_size, gap=20):
+                                       marker_container_size, target_size, gap=20,
+                                       num_points=5):
     """
     Compute calibration target positions that avoid overlapping ArUco markers.
 
-    For each desired position (center, upper-left, etc.), computes the closest
-    safe pixel position that maintains `gap` pixels between the target rectangle
-    and all marker rectangles.
+    For each desired position, computes the closest safe pixel position that
+    maintains `gap` pixels between the target rectangle and all marker rectangles.
+
+    Supported num_points: 1 (center), 3 (left/center/right), 5 (center + 4 corners).
 
     Args:
         screen_w: Screen width in pixels
@@ -60,6 +76,7 @@ def compute_safe_calibration_positions(screen_w, screen_h, marker_positions_px,
         marker_container_size: Size of each marker container in pixels
         target_size: Size of the calibration target in pixels
         gap: Minimum gap in pixels between target edge and marker edge
+        num_points: Number of calibration points (1, 3, or 5)
 
     Returns:
         List of (name, x_ratio, y_ratio) tuples - safe calibration positions
@@ -99,10 +116,6 @@ def compute_safe_calibration_positions(screen_w, screen_h, marker_positions_px,
         return screen_w / 2, screen_h / 2
 
     # Identify markers on each edge by their coordinate
-    # Left column: markers at the minimum x position
-    # Right column: markers at the maximum x position
-    # Top row: markers at the minimum y position
-    # Bottom row: markers at the maximum y position
     all_x1 = [r[0] for r in marker_rects]
     all_y1 = [r[1] for r in marker_rects]
     min_x1 = min(all_x1)
@@ -124,24 +137,36 @@ def compute_safe_calibration_positions(screen_w, screen_h, marker_positions_px,
     center_x = screen_w / 2
     center_y = screen_h / 2
 
-    # Desired corner positions (as close to corners as possible within safe area)
-    desired = [
-        ("center", center_x, center_y),
-        ("upper-left", safe_left, safe_top),
-        ("upper-right", safe_right, safe_top),
-        ("lower-right", safe_right, safe_bottom),
-        ("lower-left", safe_left, safe_bottom),
-    ]
+    # Build desired positions based on num_points
+    if num_points == 1:
+        desired = [
+            ("center", center_x, center_y),
+        ]
+        push_dirs = {"center": (0, 0)}
+    elif num_points == 3:
+        desired = [
+            ("left", safe_left, center_y),
+            ("center", center_x, center_y),
+            ("right", safe_right, center_y),
+        ]
+        push_dirs = {"left": (1, 0), "center": (0, 0), "right": (-1, 0)}
+    else:
+        desired = [
+            ("center", center_x, center_y),
+            ("upper-left", safe_left, safe_top),
+            ("upper-right", safe_right, safe_top),
+            ("lower-right", safe_right, safe_bottom),
+            ("lower-left", safe_left, safe_bottom),
+        ]
+        push_dirs = {
+            "center": (0, 0),
+            "upper-left": (1, 1),
+            "upper-right": (-1, 1),
+            "lower-right": (-1, -1),
+            "lower-left": (1, -1),
+        }
 
     # Verify each position is safe (handles interior markers that inner boundary might miss)
-    push_dirs = {
-        "center": (0, 0),
-        "upper-left": (1, 1),
-        "upper-right": (-1, 1),
-        "lower-right": (-1, -1),
-        "lower-left": (1, -1),
-    }
-
     safe_positions = []
     for name, cx, cy in desired:
         if is_safe(cx, cy):
@@ -152,7 +177,7 @@ def compute_safe_calibration_positions(screen_w, screen_h, marker_positions_px,
             safe_positions.append((name, new_cx / screen_w, new_cy / screen_h))
             print(f"[SafePos] {name}: ({cx:.0f},{cy:.0f}) -> ({new_cx:.0f},{new_cy:.0f}) adjusted to avoid markers")
 
-    print(f"[SafePos] Safe calibration positions (screen {screen_w}x{screen_h}, target={target_size}, gap={gap}):")
+    print(f"[SafePos] Safe calibration positions (screen {screen_w}x{screen_h}, target={target_size}, gap={gap}, points={num_points}):")
     for name, xr, yr in safe_positions:
         print(f"  {name}: ({int(xr*screen_w)}, {int(yr*screen_h)})")
 
@@ -881,7 +906,13 @@ class Sol2DOffsetCalibrator:
         self.target_image_path = target_image_path
         self.screen_width = screen_width
         self.screen_height = screen_height
-        self.num_points = min(max(1, num_points), 5)
+        # Snap to valid point counts: 1, 3, or 5
+        if num_points <= 1:
+            self.num_points = 1
+        elif num_points <= 3:
+            self.num_points = 3
+        else:
+            self.num_points = 5
         self.target_display_size = target_display_size
         self.offset_mode = offset_mode
         self.camera_matrix = camera_matrix
@@ -911,8 +942,13 @@ class Sol2DOffsetCalibrator:
         self.current_point_index = 0
         self.calibration_complete = False
 
-        # Get calibration positions
-        self.positions = CALIBRATION_POSITIONS_2D[:self.num_points]
+        # Get calibration positions based on num_points
+        if self.num_points == 1:
+            self.positions = CALIBRATION_POSITIONS_2D_1
+        elif self.num_points == 3:
+            self.positions = CALIBRATION_POSITIONS_2D_3
+        else:
+            self.positions = CALIBRATION_POSITIONS_2D_5
 
         mode_str = f"mode={offset_mode}"
         if camera_matrix is not None:

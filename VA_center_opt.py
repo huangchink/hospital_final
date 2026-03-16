@@ -579,27 +579,27 @@ class SettingsWindow(tk.Tk):
         self.color_dark_var  = tk.StringVar(value="0,0,0")
         self.bg_color_var    = tk.StringVar(value="0,0,0")
         self.scr_width_cm_var = tk.StringVar(value="53.0")
-        self.view_dist_cm_var = tk.StringVar(value="120.0")
+        self.view_dist_cm_var = tk.StringVar(value="60.0")
         self.interval_img_path_var = tk.StringVar(value="")
         self.interval_img_dur_var  = tk.StringVar(value="1.5")
         self.bg_after_inter_dur_var= tk.StringVar(value="1.0")
         
         # [NEW] Dual Tracker Vars
         self.enable_webcam_var = tk.BooleanVar(value=True)
-        self.enable_sol_var = tk.BooleanVar(value=False)
-        self.eval_source_var = tk.StringVar(value="Webcam") # Webcam, Sol, Both (Both logic TBD, usually primary)
+        self.enable_sol_var = tk.BooleanVar(value=True)
+        self.eval_source_var = tk.StringVar(value="Sol") # Webcam, Sol, Both (Both logic TBD, usually primary)
 
         # [NEW] Sol Vars
         self.sol_ip_var = tk.StringVar(value="192.168.1.100")
         self.sol_port_var = tk.StringVar(value="8080")
-        self.sol_marker_k_var = tk.StringVar(value="6")
-        self.sol_marker_n_var = tk.StringVar(value="4")
-        self.sol_marker_size_var = tk.StringVar(value="80")
+        self.sol_marker_k_var = tk.StringVar(value="8")
+        self.sol_marker_n_var = tk.StringVar(value="5")
+        self.sol_marker_size_var = tk.StringVar(value="200")
         self.sol_aruco_dict_var = tk.StringVar(value="DICT_4X4_250")
         # sol_screen_phy_width_var removed, using scr_width_cm_var * 10
-        self.sol_pose_smooth_var = tk.StringVar(value="0.1")
-        self.sol_gaze_smooth_var = tk.StringVar(value="0.15")
-        self.sol_gaze_method_var = tk.StringVar(value="3D")  # "3D" or "2D"
+        self.sol_pose_smooth_var = tk.StringVar(value="1.0")
+        self.sol_gaze_smooth_var = tk.StringVar(value="1.0")
+        self.sol_gaze_method_var = tk.StringVar(value="2D")  # "3D" or "2D"
         self.sol_cal_show_gaze_var = tk.BooleanVar(value=True)  # Show gaze during calibration
 
         # [NEW] Connection State
@@ -616,8 +616,8 @@ class SettingsWindow(tk.Tk):
         # [NEW] Recording Vars - Optimized
         self.rec_resolution_var = tk.StringVar(value="Original")
         self.rec_webcam_var = tk.BooleanVar(value=True) # Webcam Video + Gaze
-        self.rec_sol_data_var = tk.BooleanVar(value=False) # Sol Gaze (+ Screen implicity)
-        self.rec_sol_raw_video_var = tk.BooleanVar(value=False) # Only if Sol Data is checked
+        self.rec_sol_data_var = tk.BooleanVar(value=True) # Sol Gaze (+ Screen implicity)
+        self.rec_sol_raw_video_var = tk.BooleanVar(value=True) # Only if Sol Data is checked
 
         # [NEW] Preview Config (Init early for Load Last)
         self.camera_idx_var = tk.StringVar(value="0")
@@ -632,7 +632,7 @@ class SettingsWindow(tk.Tk):
         self.paper_color_var = tk.BooleanVar(value=False)
 
         # [NEW] Sol Offset Calibration Vars
-        self.sol_offset_target_img_var = tk.StringVar(value="")
+        self.sol_offset_target_img_var = tk.StringVar(value="刺激源圖片選擇/ball.jpg")
         self.sol_offset_target_size_var = tk.StringVar(value="100")
         self.sol_offset_num_points_var = tk.StringVar(value="5")
         self.sol_offset_user_screen_var = tk.StringVar(value="0")
@@ -1018,6 +1018,17 @@ class SettingsWindow(tk.Tk):
         # ── Section 4: Screen & Viewing ──
         grp_screen = ttk.LabelFrame(parent, text="Screen & Viewing"); grp_screen.pack(fill="x", padx=10, pady=5)
         r = 0
+
+        # Test Screen dropdown (shares variable with Sol calibration "User Screen")
+        test_screen_options = []
+        for mon in get_monitor_info_windows():
+            test_screen_options.append(f"{mon['index']}: {mon['name']} ({mon['width']}x{mon['height']})")
+        if not test_screen_options:
+            test_screen_options = ["0: Primary Display"]
+        ttk.Label(grp_screen, text="Test Screen:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        self.cmb_test_screen = ttk.Combobox(grp_screen, textvariable=self.sol_offset_user_screen_var, values=test_screen_options, state="readonly", width=30)
+        self.cmb_test_screen.grid(row=r, column=1, sticky="w", **pad); r += 1
+
         ttk.Label(grp_screen, text="Screen Width (cm):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
         ttk.Spinbox(grp_screen, textvariable=self.scr_width_cm_var, from_=10, to=300, increment=0.5, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
 
@@ -1158,7 +1169,7 @@ class SettingsWindow(tk.Tk):
         ttk.Spinbox(grp_target, textvariable=self.sol_offset_target_size_var, from_=50, to=500, increment=10, width=10).grid(row=1, column=1, sticky="w", **pad)
 
         ttk.Label(grp_target, text="Calibration Points:", font=l_font).grid(row=2, column=0, sticky="w", **pad)
-        ttk.Spinbox(grp_target, textvariable=self.sol_offset_num_points_var, from_=1, to=5, increment=1, width=10).grid(row=2, column=1, sticky="w", **pad)
+        ttk.Combobox(grp_target, textvariable=self.sol_offset_num_points_var, values=["1", "3", "5"], state="readonly", width=10).grid(row=2, column=1, sticky="w", **pad)
 
         # Display Settings
         grp_display = ttk.LabelFrame(parent, text="Display Settings")
@@ -1437,7 +1448,8 @@ Controls: SPACE = Record point, Q = Cancel"""
         # Compute safe calibration positions that avoid ArUco markers (20px gap)
         safe_positions = compute_safe_calibration_positions(
             screen_w, screen_h, aruco_markers_px,
-            marker_container_size, target_size, gap=20
+            marker_container_size, target_size, gap=20,
+            num_points=num_points
         )
         calibrator.set_safe_positions(safe_positions)
 
@@ -1563,9 +1575,20 @@ Controls: SPACE = Record point, Q = Cancel"""
         except Exception as e:
             print(f"[2D Cal] Failed to create target surface: {e}")
 
+        # Focus-independent key detection via Win32 API
+        # Allows SPACE/Q to work even when the OpenCV tester window has focus
+        _prev_space_down = False
+        _prev_q_down = False
+        try:
+            _user32_key = ctypes.windll.user32
+        except Exception:
+            _user32_key = None
+
         try:
             while running and not calibrator.calibration_complete:
-                # Handle events
+                space_pressed = False
+
+                # Handle events from pygame (works when user screen has focus)
                 for ev in pygame.event.get():
                     if ev.type == pygame.QUIT:
                         running = False
@@ -1573,15 +1596,29 @@ Controls: SPACE = Record point, Q = Cancel"""
                         if ev.key == pygame.K_q:
                             running = False
                         elif ev.key == pygame.K_SPACE:
-                            # Start collecting samples when SPACE is pressed
-                            # ONLY if homography passes quality check
-                            if homography_good and not collecting_samples and H_screen_to_image is not None:
-                                collecting_samples = True
-                                collected_gaze_samples = []
-                                collection_start_time = time.time()
-                                print(f"[2D Cal] Starting sample collection for point {calibrator.current_point_index + 1}...")
-                            elif not homography_good:
-                                print(f"[2D Cal] Cannot record - homography not stable yet. Wait for quality check to pass.")
+                            space_pressed = True
+
+                # Focus-independent key detection via Win32 GetAsyncKeyState
+                # Detects key presses regardless of which window has focus
+                if _user32_key and running:
+                    space_down = bool(_user32_key.GetAsyncKeyState(0x20) & 0x8000)
+                    q_down = bool(_user32_key.GetAsyncKeyState(0x51) & 0x8000)
+                    if space_down and not _prev_space_down:
+                        space_pressed = True
+                    if q_down and not _prev_q_down:
+                        running = False
+                    _prev_space_down = space_down
+                    _prev_q_down = q_down
+
+                # Process SPACE press (from any source)
+                if space_pressed and running:
+                    if homography_good and not collecting_samples and H_screen_to_image is not None:
+                        collecting_samples = True
+                        collected_gaze_samples = []
+                        collection_start_time = time.time()
+                        print(f"[2D Cal] Starting sample collection for point {calibrator.current_point_index + 1}...")
+                    elif not homography_good:
+                        print(f"[2D Cal] Cannot record - homography not stable yet. Wait for quality check to pass.")
 
                 # Get latest gaze data (drain queue but only use the last one)
                 # Limit to 20 items per frame to prevent long delays when queue builds up
@@ -1793,15 +1830,14 @@ Controls: SPACE = Record point, Q = Cancel"""
                     status_color = (255, 100, 100)
                     detect_text = "Waiting for ArUco markers..."
 
-                pygame.draw.rect(win, (30, 30, 30), (0, screen_h - 80, screen_w, 80))
+                pygame.draw.rect(win, (30, 30, 30), (0, screen_h - 50, screen_w, 50))
 
-                text1 = font.render(f"Position: {pos_name} ({point_num}/{total_points})", True, (255, 255, 255))
-                text2 = font.render(detect_text, True, status_color)
-                text3 = small_font.render("Press Q to cancel", True, (150, 150, 150))
+                status_line = f"Position: {pos_name} ({point_num}/{total_points}) | {detect_text}"
+                text1 = font.render(status_line, True, status_color)
+                text2 = small_font.render("Press Q to cancel", True, (150, 150, 150))
 
-                win.blit(text1, (20, screen_h - 75))
-                win.blit(text2, (20, screen_h - 45))
-                win.blit(text3, (screen_w - 150, screen_h - 30))
+                win.blit(text1, (20, screen_h - 38))
+                win.blit(text2, (screen_w - 150, screen_h - 30))
 
                 pygame.display.flip()
                 clock.tick(30)
@@ -2066,10 +2102,15 @@ Controls: SPACE = Record point, Q = Cancel"""
         if SOL_2D_OFFSET_AVAILABLE:
             username = self.user_var.get().strip() or 'anonymous'
             calib_dir = Path(self.calib_dir_var.get())
+            from sol_2d_offset_calibration import get_sol_2d_offset_path
+            offset_path = get_sol_2d_offset_path(username, calib_dir)
+            print(f"[Sol Preview] Looking for 2D offset: {offset_path} (exists: {offset_path.exists()})")
             preview_2d_offset_data = load_sol_2d_offset(username, calib_dir)
             if preview_2d_offset_data and preview_2d_offset_data.get('model') and preview_2d_offset_data['model'].is_trained:
                 preview_2d_offset_model = preview_2d_offset_data['model']
-                print(f"[Sol Preview] Loaded 2D offset model for user '{username}'")
+                print(f"[Sol Preview] Loaded 2D offset model for user '{username}' ({len(preview_2d_offset_model.calibration_points)} points)")
+            else:
+                print(f"[Sol Preview] No 2D offset model found for user '{username}' in {calib_dir}")
 
         # Create projector
         cam_matrix = self.sol_cam_params.get('cam_matrix')
@@ -2219,44 +2260,71 @@ Controls: SPACE = Record point, Q = Cancel"""
 
                     # Process gaze based on selected method
                     gaze_method = self.sol_gaze_method_var.get()
+                    debug_this_frame = (frame_count % 100 == 0)
 
                     if latest_gaze is not None:
                         try:
-                            if gaze_method == "2D" and sol_projector.is_homography_valid():
-                                # 2D Gaze Mapping: Use gaze_2d and homography
-                                if hasattr(latest_gaze.combined, 'gaze_2d'):
-                                    g2d = latest_gaze.combined.gaze_2d
-                                    gaze_2d_pt = (g2d.x, g2d.y)
-                                    screen_pt = sol_projector.project_gaze_2d_to_screen(gaze_2d_pt)
-                                    if screen_pt:
-                                        current_gaze_pt = screen_pt
-                            elif gaze_method == "3D" and sol_projector.is_calibrated():
-                                # 3D Gaze Mapping: Use gaze_3d and ray-plane intersection
-                                left_o = latest_gaze.left_eye.gaze.origin
-                                right_o = latest_gaze.right_eye.gaze.origin
-                                gaze_origin_mm = np.array([
-                                    (left_o.x + right_o.x) / 2.0,
-                                    (left_o.y + right_o.y) / 2.0,
-                                    (left_o.z + right_o.z) / 2.0
-                                ])
-                                g3d = latest_gaze.combined.gaze_3d
-                                gaze_point_mm = np.array([g3d.x, g3d.y, g3d.z])
-                                gaze_direction_vec = gaze_point_mm - gaze_origin_mm
-                                norm = np.linalg.norm(gaze_direction_vec)
-                                if norm > 0:
-                                    gaze_direction_unit = gaze_direction_vec / norm
-                                    gaze_origin_m = gaze_origin_mm / 1000.0
-                                    screen_pt_m = sol_projector.project_gaze_to_screen(gaze_origin_m, gaze_direction_unit)
-                                    if screen_pt_m is not None:
-                                        pix = sol_projector.physical_to_pixels(screen_pt_m, screen_w, screen_width_m)
-                                        if pix:
-                                            current_gaze_pt = (int(pix[0]), int(pix[1]))
+                            if gaze_method == "2D":
+                                h_valid = sol_projector.is_homography_valid()
+                                if not h_valid:
+                                    if debug_this_frame:
+                                        print(f"[Sol Preview] Frame {frame_count}: method=2D, homography NOT valid")
+                                else:
+                                    has_g2d = hasattr(latest_gaze.combined, 'gaze_2d')
+                                    if not has_g2d:
+                                        if debug_this_frame:
+                                            print(f"[Sol Preview] Frame {frame_count}: method=2D, homography OK, but gaze_2d attribute MISSING (attrs: {[a for a in dir(latest_gaze.combined) if not a.startswith('_')]})")
+                                    else:
+                                        g2d = latest_gaze.combined.gaze_2d
+                                        gaze_2d_pt = (g2d.x, g2d.y)
+                                        screen_pt = sol_projector.project_gaze_2d_to_screen(gaze_2d_pt)
+                                        if screen_pt:
+                                            current_gaze_pt = screen_pt
+                                        elif debug_this_frame:
+                                            print(f"[Sol Preview] Frame {frame_count}: method=2D, gaze_2d=({g2d.x:.1f}, {g2d.y:.1f}), project returned None")
+                            elif gaze_method == "3D":
+                                cal_ok = sol_projector.is_calibrated()
+                                if not cal_ok:
+                                    if debug_this_frame:
+                                        print(f"[Sol Preview] Frame {frame_count}: method=3D, pose NOT calibrated")
+                                else:
+                                    left_o = latest_gaze.left_eye.gaze.origin
+                                    right_o = latest_gaze.right_eye.gaze.origin
+                                    gaze_origin_mm = np.array([
+                                        (left_o.x + right_o.x) / 2.0,
+                                        (left_o.y + right_o.y) / 2.0,
+                                        (left_o.z + right_o.z) / 2.0
+                                    ])
+                                    g3d = latest_gaze.combined.gaze_3d
+                                    gaze_point_mm = np.array([g3d.x, g3d.y, g3d.z])
+                                    gaze_direction_vec = gaze_point_mm - gaze_origin_mm
+                                    norm = np.linalg.norm(gaze_direction_vec)
+                                    if norm > 0:
+                                        gaze_direction_unit = gaze_direction_vec / norm
+                                        gaze_origin_m = gaze_origin_mm / 1000.0
+                                        screen_pt_m = sol_projector.project_gaze_to_screen(gaze_origin_m, gaze_direction_unit)
+                                        if screen_pt_m is not None:
+                                            pix = sol_projector.physical_to_pixels(screen_pt_m, screen_w, screen_width_m)
+                                            if pix:
+                                                current_gaze_pt = (int(pix[0]), int(pix[1]))
+                                            elif debug_this_frame:
+                                                print(f"[Sol Preview] Frame {frame_count}: method=3D, physical_to_pixels returned None")
+                                        elif debug_this_frame:
+                                            print(f"[Sol Preview] Frame {frame_count}: method=3D, project_gaze_to_screen returned None")
+                                    elif debug_this_frame:
+                                        print(f"[Sol Preview] Frame {frame_count}: method=3D, gaze direction norm=0")
+                            else:
+                                if debug_this_frame:
+                                    print(f"[Sol Preview] Frame {frame_count}: unknown method '{gaze_method}'")
                         except Exception as e:
                             print(f"[Sol Preview] Gaze processing error: {e}")
                             traceback.print_exc()
+                    elif debug_this_frame:
+                        gaze_q_size = self.sol_gaze_queue.qsize() if hasattr(self.sol_gaze_queue, 'qsize') else '?'
+                        print(f"[Sol Preview] Frame {frame_count}: NO gaze data from Sol glasses (queue size: {gaze_q_size})")
 
                     # Log progress every 100 frames
-                    if frame_count % 100 == 0:
+                    if debug_this_frame:
                         print(f"[Sol Preview] Frame {frame_count}, gaze_pt={current_gaze_pt}")
 
                     # Render - fill with transparent color key
@@ -2547,6 +2615,16 @@ Controls: SPACE = Record point, Q = Cancel"""
         dist_cm = float(self.view_dist_cm_var.get())
         sw_deg = screen_width_deg_from_cm(sw_cm, dist_cm)
 
+        # Resolve user screen for test window (use real pixel dimensions from OS)
+        monitors = get_monitor_info_windows()
+        try:
+            user_scr_idx = int(self.sol_offset_user_screen_var.get().split(':')[0].strip())
+        except Exception:
+            user_scr_idx = 0
+        if user_scr_idx >= len(monitors):
+            user_scr_idx = 0
+        user_scr = monitors[user_scr_idx]
+
         self.cfg = {
             # General
             'user_name': self.user_var.get(),
@@ -2599,6 +2677,12 @@ Controls: SPACE = Record point, Q = Cancel"""
             # [NEW] Practice mode and Paper color
             'practice_mode': practice_mode,
             'paper_color': self.paper_color_var.get(),
+
+            # Screen geometry (real pixel dimensions from OS, not DPI-scaled)
+            'screen_x': user_scr.get('x', 0),
+            'screen_y': user_scr.get('y', 0),
+            'screen_w': user_scr['width'],
+            'screen_h': user_scr['height'],
         }
 
         # Cancel pending timers while test runs
@@ -2832,10 +2916,17 @@ def run_sol_worker(connector, on_connect, on_fail):
 
 # ---------- Main Experiment ----------
 def run_test(cfg, sol_context=None):
+    # Use real pixel dimensions from OS (not DPI-scaled pygame.display.Info)
+    W = cfg.get('screen_w', 1920)
+    H = cfg.get('screen_h', 1080)
+    screen_x = cfg.get('screen_x', 0)
+    screen_y = cfg.get('screen_y', 0)
+    import os as os_module
+    os_module.environ['SDL_VIDEO_WINDOW_POS'] = f"{screen_x},{screen_y}"
     pygame.init()
-    info = pygame.display.Info()
-    W, H = info.current_w, info.current_h
-    win = pygame.display.set_mode((W, H), pygame.FULLSCREEN)
+    win = pygame.display.set_mode((W, H), pygame.NOFRAME)
+    print(f"[Test] Window: {W}x{H} at ({screen_x},{screen_y}), NOFRAME mode")
+    ensure_pygame_focus()
 
     # 1. Initialize Webcam Tracker
     gf = None

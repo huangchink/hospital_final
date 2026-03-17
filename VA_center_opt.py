@@ -3167,6 +3167,11 @@ def run_vf_test(cfg, sol_context=None):
         sol_scene_queue = sol_context.get('scene_queue')
         cam_params = sol_context.get('cam_params') or {}
 
+        # Resume scene stream FIRST (matching run_test order) to give Sol SDK
+        # time to restart the video stream while we set up the projector
+        if sol_connector:
+            sol_connector.resume_scene_stream()
+
         aruco_dict_map = {
             "DICT_4X4_50": cv2.aruco.DICT_4X4_50, "DICT_4X4_100": cv2.aruco.DICT_4X4_100,
             "DICT_4X4_250": cv2.aruco.DICT_4X4_250, "DICT_5X5_250": cv2.aruco.DICT_5X5_250,
@@ -3191,11 +3196,17 @@ def run_vf_test(cfg, sol_context=None):
         sol_projector = ScreenProjector3D(cam_matrix, dist_coeffs, adict,
                                           smoothing_factor=cfg.get('sol_pose_smooth', 0.1))
 
+        # Restore cached homography from Sol Preview for immediate gaze availability
+        cached_H = sol_context.get('cached_homography')
+        if cached_H is not None:
+            sol_projector.set_homography(cached_H)
+            print(f"[VF Sol] Restored cached homography from preview")
+
+        # Set 2D gaze smoothing factor
+        sol_projector.set_gaze_2d_smoothing_factor(cfg.get('sol_gaze_smooth', 0.15))
+        sol_projector.reset_gaze_2d_smoothing()
+
         phy_w_m = cfg.get('sol_screen_phy_width_mm', 530.0) / 1000.0
-        sol_projector.start_background_detection(
-            sol_cfg['marker_pattern_size'] / W * phy_w_m,
-            aruco_markers_px, marker_container_size, W, H, phy_w_m
-        )
 
         # Load 2D offset model if using 2D gaze method
         sol_2d_offset_model = None
@@ -3207,6 +3218,10 @@ def run_vf_test(cfg, sol_context=None):
                 if offset_data:
                     sol_2d_offset_model = Sol2DOffsetModel.from_dict(offset_data)
                     print(f"[VF Sol] Loaded 2D offset model ({sol_2d_offset_model.num_points} pts)")
+                    # Also set on projector for integrated smoothing
+                    if sol_2d_offset_model.is_trained:
+                        sol_projector.set_gaze_2d_offset_model(sol_2d_offset_model)
+                        print(f"[VF Sol] Applied 2D offset model to projector")
             except Exception as e:
                 print(f"[VF Sol] Failed to load 2D offset: {e}")
 
@@ -3225,8 +3240,11 @@ def run_vf_test(cfg, sol_context=None):
             except Exception as e:
                 print(f"[VF Sol] Failed to load 3D offset: {e}")
 
-        if sol_connector:
-            sol_connector.resume_scene_stream()
+        # Start background detection AFTER scene stream is resumed and offset models loaded
+        sol_projector.start_background_detection(
+            sol_cfg['marker_pattern_size'] / W * phy_w_m,
+            aruco_markers_px, marker_container_size, W, H, phy_w_m
+        )
 
     # 3. Setup Recorder
     if cfg.get('practice_mode', False):
@@ -3246,20 +3264,21 @@ def run_vf_test(cfg, sol_context=None):
     diameter_px = vf_angular_to_pixel_diameter(goldmann_angle, dist_cm, px_per_cm)
     diameter_px = max(20, diameter_px)
 
-    stim_img = None
     vf_stim_path = cfg.get('vf_stim_path', '')
-    if vf_stim_path and Path(vf_stim_path).exists():
-        try:
-            raw = pygame.image.load(vf_stim_path)
-            stim_img = pygame.transform.scale(raw, (diameter_px, diameter_px))
-        except Exception as e:
-            print(f"[VF Test] Failed to load stimulus image: {e}")
-
-    if stim_img is None:
-        # Default: bright circle
-        stim_img = pygame.Surface((diameter_px, diameter_px), pygame.SRCALPHA)
-        stim_img.fill((0, 0, 0, 0))
-        pygame.draw.circle(stim_img, (255, 255, 255), (diameter_px // 2, diameter_px // 2), diameter_px // 2)
+    if not vf_stim_path or not Path(vf_stim_path).exists():
+        pygame.quit()
+        messagebox.showerror("VF Test Error",
+                             f"Stimulus image not found:\n{vf_stim_path}\n\n"
+                             "Please select a valid stimulus image in VF settings.")
+        return
+    try:
+        raw = pygame.image.load(vf_stim_path)
+        stim_img = pygame.transform.scale(raw, (diameter_px, diameter_px))
+    except Exception as e:
+        pygame.quit()
+        messagebox.showerror("VF Test Error",
+                             f"Failed to load stimulus image:\n{vf_stim_path}\n\n{e}")
+        return
 
     # 5. Generate stimulus positions
     pts_deg = vf_generate_points(cfg.get('vf_stim_points', 9),
@@ -3292,7 +3311,129 @@ def run_vf_test(cfg, sol_context=None):
                     pi = pygame.image.frombuffer(cv_img.tobytes(), cv_img.shape[1::-1], "RGB")
                     surf.blit(pi, (pos[0], pos[1]))
 
-    # Inter-trial screen helper
+    # Scene frame extraction helper (matches run_test's get_sol_frame)
+    def get_scene_frame():
+        """Drain scene queue and return latest frame as numpy array."""
+        frame_obj = None
+        if sol_scene_queue:
+            for _ in range(10):
+                try:
+                    frame_obj = sol_scene_queue.get_nowait()
+                except queue.Empty:
+                    break
+        if frame_obj is None:
+            return None
+        # Sol SDK v2: frame has .img attribute (numpy array)
+        if hasattr(frame_obj, 'img') and frame_obj.img is not None:
+            return frame_obj.img.copy()
+        # Legacy: frame has get_buffer() method
+        if hasattr(frame_obj, 'get_buffer'):
+            try:
+                w_cam, h_cam = 1328, 1200  # Default Sol resolution
+                if sol_context and 'cam_params' in sol_context:
+                    try:
+                        res = sol_context['cam_params'].resolution
+                        if res:
+                            w_cam, h_cam = res.width, res.height
+                    except Exception:
+                        pass
+                buf = frame_obj.get_buffer()
+                arr = np.frombuffer(buf, dtype=np.uint8)
+                arr = arr.reshape((h_cam, w_cam, 3))
+                return arr.copy()
+            except Exception as e:
+                print(f"[VF Sol] Frame convert error: {e}")
+                return None
+        # Assume numpy array
+        if isinstance(frame_obj, np.ndarray):
+            return frame_obj
+        return None
+
+    # Webcam frame helper (matches run_test's get_webcam_frame)
+    def get_webcam_frame():
+        if gf and hasattr(gf, 'camera') and gf.camera:
+            return getattr(gf.camera, 'last_frame', None)
+        elif webcam:
+            return getattr(webcam, 'last_frame', None) or getattr(webcam, 'latest_frame', None)
+        return None
+
+    # Collect all gaze data (matches run_test's collect_gaze_data pattern)
+    def collect_gaze():
+        """Collect gaze from all sources. Returns (webcam_pt, sol_mapped, sol_raw, sol_raw_data, sol_scene_frame)."""
+        wg_pt = None
+        sol_mapped = None
+        sol_raw = None
+        sol_raw_data = None
+        sol_sf = None
+
+        # Webcam
+        if gf:
+            try:
+                gi = gf.get_gaze_info()
+                if gi and getattr(gi, 'status', False):
+                    coords = getattr(gi, 'filtered_gaze_coordinates', None) or getattr(gi, 'gaze_coordinates', None)
+                    if coords:
+                        wg_pt = (int(coords[0]), int(coords[1]))
+            except Exception:
+                pass
+
+        # Sol
+        if sol_connector and sol_projector:
+            sol_sf = get_scene_frame()
+            if sol_sf is not None:
+                try:
+                    sol_projector.submit_frame_for_pose(sol_sf)
+                except Exception:
+                    pass
+
+            latest_gaze = None
+            if sol_gaze_queue:
+                for _ in range(20):
+                    try:
+                        latest_gaze = sol_gaze_queue.get_nowait()
+                    except queue.Empty:
+                        break
+
+            if latest_gaze:
+                sol_raw_data = latest_gaze
+                try:
+                    if hasattr(latest_gaze, 'combined') and hasattr(latest_gaze.combined, 'gaze_2d'):
+                        g2d = latest_gaze.combined.gaze_2d
+                        sol_raw = (g2d.x, g2d.y)
+
+                    if sol_gaze_method == '2D' and sol_projector.is_homography_valid():
+                        if sol_raw:
+                            screen_pt = sol_projector.project_gaze_2d_to_screen(sol_raw, apply_smoothing=True)
+                            if screen_pt:
+                                sol_mapped = (int(screen_pt[0]), int(screen_pt[1]))
+                    elif sol_gaze_method == '3D' and sol_projector.is_calibrated():
+                        left_o = latest_gaze.left_eye.gaze.origin
+                        right_o = latest_gaze.right_eye.gaze.origin
+                        origin_mm = np.array([(left_o.x + right_o.x) / 2, (left_o.y + right_o.y) / 2, (left_o.z + right_o.z) / 2])
+                        g3d = latest_gaze.combined.gaze_3d
+                        point_mm = np.array([g3d.x, g3d.y, g3d.z])
+                        direction = point_mm - origin_mm
+                        norm = np.linalg.norm(direction)
+                        if norm > 0:
+                            direction_unit = direction / norm
+                            if sol_offset_pitch != 0 or sol_offset_yaw != 0:
+                                cp, sp = math.cos(sol_offset_pitch), math.sin(sol_offset_pitch)
+                                cy_r, sy_r = math.cos(sol_offset_yaw), math.sin(sol_offset_yaw)
+                                Rp = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]])
+                                Ry = np.array([[cy_r, 0, sy_r], [0, 1, 0], [-sy_r, 0, cy_r]])
+                                direction_unit = Ry @ Rp @ direction_unit
+                            origin_m = origin_mm / 1000.0
+                            screen_pt_m = sol_projector.project_gaze_to_screen(origin_m, direction_unit)
+                            if screen_pt_m is not None:
+                                pix = sol_projector.physical_to_pixels(screen_pt_m, W, phy_w_m)
+                                if pix:
+                                    sol_mapped = (int(pix[0]), int(pix[1]))
+                except Exception:
+                    pass
+
+        return wg_pt, sol_mapped, sol_raw, sol_raw_data, sol_sf
+
+    # Inter-trial screen helper (with recording, matching VA test's show_interval_center)
     def show_inter(dur):
         t0 = time.time()
         while time.time() - t0 < dur:
@@ -3306,8 +3447,30 @@ def run_vf_test(cfg, sol_context=None):
                 pygame.draw.line(win, (255, 255, 255), (cx - 40, cy), (cx + 40, cy), 4)
                 pygame.draw.line(win, (255, 255, 255), (cx, cy - 40), (cx, cy + 40), 4)
             draw_aruco(win)
+
+            # Collect gaze and draw marker
+            wg_pt, sol_m, sol_r, sol_rd, sol_sf = collect_gaze()
+            eval_source = cfg.get('eval_source', 'Webcam')
+            disp_pt = wg_pt if eval_source == "Webcam" else sol_m
+            if show_gaze and disp_pt:
+                pygame.draw.circle(win, gaze_color, disp_pt, gaze_radius, gaze_width)
+
             pygame.display.flip()
-            clock.tick(60)
+
+            # Record (matching VA test's show_interval_center)
+            wb_f = get_webcam_frame()
+            rec_screen = cfg.get('rec_webcam') or cfg.get('rec_sol_data')
+            sol_f = sol_sf if cfg.get('rec_sol_raw_video') else None
+            recorder.process_and_record(
+                wb_f,
+                win if rec_screen else None,
+                webcam_gaze=wg_pt,
+                sol_mapped_gaze=sol_m if cfg.get('rec_sol_data') else None,
+                sol_raw_gaze=sol_r if cfg.get('rec_sol_data') else None,
+                sol_raw_gaze_data=sol_rd if cfg.get('rec_sol_data') else None,
+                sol_frame=sol_f
+            )
+            clock.tick(30)
 
     # Sol gaze cache
     sol_last_valid_pt = None
@@ -3325,12 +3488,93 @@ def run_vf_test(cfg, sol_context=None):
     gaze_width = cfg.get('gaze_marker_width', 4)
 
     results = []
-    running = True
+    quit_requested = False
 
     try:
-        for idx, stim in enumerate(stim_pts):
-            if not running:
+        # Initial warm-up: show fixation cross with ArUco markers
+        # Wait until homography is valid (up to 10s), minimum 3s
+        warmup_needed = cfg['enable_sol'] and sol_projector is not None
+        if warmup_needed:
+            print("[VF Test] Warm-up phase - waiting for marker detection...")
+        warmup_scene_frames = 0
+        t0_warmup = time.time()
+        WARMUP_MIN = 3.0
+        WARMUP_MAX = 10.0
+        while True:
+            elapsed_warmup = time.time() - t0_warmup
+            if elapsed_warmup >= WARMUP_MAX:
                 break
+            if elapsed_warmup >= WARMUP_MIN and sol_projector and sol_projector.is_homography_valid():
+                break
+            if not warmup_needed and elapsed_warmup >= WARMUP_MIN:
+                break
+
+            pygame.event.pump()
+            win.fill((0, 0, 0))
+            # Fixation cross
+            pygame.draw.line(win, (255, 255, 255), (cx - 40, cy), (cx + 40, cy), 4)
+            pygame.draw.line(win, (255, 255, 255), (cx, cy - 40), (cx, cy + 40), 4)
+            draw_aruco(win)
+
+            # Process scene frames for homography detection
+            if sol_connector and sol_projector:
+                scene_img = get_scene_frame()
+                if scene_img is not None:
+                    warmup_scene_frames += 1
+                    sol_projector.submit_frame_for_pose(scene_img)
+
+            # Drain gaze queue during warm-up to prevent stale data
+            if sol_gaze_queue:
+                while True:
+                    try:
+                        sol_gaze_queue.get_nowait()
+                    except queue.Empty:
+                        break
+
+            pygame.display.flip()
+            clock.tick(30)
+
+        if sol_projector:
+            h_ok = sol_projector.is_homography_valid()
+            bg_frames = getattr(sol_projector, 'marker_frame_counter', -1)
+            det_ids = sol_projector.get_detected_marker_ids() if hasattr(sol_projector, 'get_detected_marker_ids') else []
+            thread_alive = sol_projector.pose_thread.is_alive() if sol_projector.pose_thread else False
+            q_size = sol_projector.pose_queue.qsize()
+            print(f"[VF Test] Warm-up done ({time.time() - t0_warmup:.1f}s). "
+                  f"Scene frames submitted: {warmup_scene_frames}, "
+                  f"BG thread alive: {thread_alive}, "
+                  f"Queue size: {q_size}, "
+                  f"BG thread processed: {bg_frames}, "
+                  f"Detected markers: {det_ids}, "
+                  f"Homography valid: {h_ok}")
+
+            # If BG thread didn't process any frames, try synchronous detection
+            if bg_frames == 0:
+                print("[VF Test] BG thread processed 0 frames. Trying synchronous detection...")
+                # Wait briefly for a fresh frame
+                time.sleep(0.5)
+                test_frame = get_scene_frame()
+                if test_frame is not None:
+                    print(f"[VF Test] Got test frame: shape={test_frame.shape}, dtype={test_frame.dtype}")
+                    corners, ids, _ = cv2.aruco.detectMarkers(test_frame, adict)
+                    det = ids.flatten().tolist() if ids is not None else []
+                    print(f"[VF Test] Synchronous detection: {len(det)} markers found: {det}")
+                    if len(det) >= 4:
+                        result = sol_projector.update_pose(
+                            test_frame,
+                            sol_cfg['marker_pattern_size'] / W * phy_w_m,
+                            aruco_markers_px, marker_container_size, W, H, phy_w_m
+                        )
+                        h_ok2 = sol_projector.is_homography_valid()
+                        print(f"[VF Test] After sync detection: Homography valid: {h_ok2}")
+                else:
+                    print("[VF Test] No scene frame available for sync test")
+
+        for idx, stim in enumerate(stim_pts):
+            if quit_requested:
+                break
+
+            print(f"[VF Test] Trial {idx + 1}/{len(stim_pts)}: stim at {stim}")
 
             # Inter-trial
             show_inter(inter_dur)
@@ -3343,19 +3587,17 @@ def run_vf_test(cfg, sol_context=None):
             orig_stim_copy = stim_img.copy()
             angle = 0
 
-            while running:
+            while True:
                 now = time.time()
                 dt = now - last_t
                 last_t = now
                 elapsed = now - t0
 
                 for ev in pygame.event.get():
-                    if ev.type == pygame.QUIT:
-                        running = False
-                    elif ev.type == pygame.KEYDOWN and ev.key == pygame.K_q:
-                        running = False
+                    if ev.type == pygame.KEYDOWN and ev.key == pygame.K_q:
+                        quit_requested = True
 
-                if not running:
+                if quit_requested:
                     break
 
                 win.fill((0, 0, 0))
@@ -3371,95 +3613,19 @@ def run_vf_test(cfg, sol_context=None):
                     rect = disp.get_rect(center=stim)
                 win.blit(disp, rect)
 
-                # --- Gaze Collection ---
-                webcam_pt = None
-                sol_pt = None
-                sol_frame_numpy = None
+                # --- Gaze Collection (using shared helper) ---
+                webcam_pt, sol_pt, sol_raw_pt, sol_raw_data, sol_frame_numpy = collect_gaze()
 
-                # Webcam
-                if gf:
-                    gi = gf.get_gaze_info()
-                    if gi and getattr(gi, 'status', False):
-                        c = getattr(gi, 'filtered_gaze_coordinates', None) or getattr(gi, 'gaze_coordinates', None)
-                        if c:
-                            webcam_pt = (int(c[0]), int(c[1]))
-
-                # Sol
-                got_new_gaze = False
+                # Debug counters
                 if sol_connector and sol_projector:
                     sol_debug_counters['total_frames'] += 1
-
-                    # Drain scene queue
-                    if sol_scene_queue:
-                        while True:
-                            try:
-                                frame = sol_scene_queue.get_nowait()
-                                if hasattr(frame, 'img') and frame.img is not None:
-                                    sol_frame_numpy = frame.img
-                                elif isinstance(frame, np.ndarray):
-                                    sol_frame_numpy = frame
-                            except queue.Empty:
-                                break
-                    if sol_frame_numpy is not None:
-                        sol_projector.submit_frame_for_pose(sol_frame_numpy)
-
-                    # Drain gaze queue
-                    latest_gaze = None
-                    if sol_gaze_queue:
-                        while True:
-                            try:
-                                latest_gaze = sol_gaze_queue.get_nowait()
-                                got_new_gaze = True
-                            except queue.Empty:
-                                break
-
-                    if latest_gaze:
-                        phy_w_m = cfg.get('sol_screen_phy_width_mm', 530.0) / 1000.0
-                        try:
-                            if sol_gaze_method == '2D' and sol_projector.is_homography_valid():
-                                raw_g2d = latest_gaze.combined.gaze_2d
-                                raw_pt = (raw_g2d.x, raw_g2d.y)
-                                screen_pt = sol_projector.project_gaze_2d_to_screen(raw_pt, apply_smoothing=True)
-                                if screen_pt:
-                                    sx, sy = int(screen_pt[0]), int(screen_pt[1])
-                                    if sol_2d_offset_model:
-                                        corrected = sol_2d_offset_model.apply_offset(raw_pt, screen_pt)
-                                        if corrected:
-                                            sx, sy = int(corrected[0]), int(corrected[1])
-                                    sol_pt = (sx, sy)
-                                    sol_debug_counters['valid_gaze'] += 1
-                            elif sol_gaze_method == '3D' and sol_projector.is_calibrated():
-                                left_o = latest_gaze.left_eye.gaze.origin
-                                right_o = latest_gaze.right_eye.gaze.origin
-                                origin_mm = np.array([(left_o.x + right_o.x) / 2, (left_o.y + right_o.y) / 2, (left_o.z + right_o.z) / 2])
-                                g3d = latest_gaze.combined.gaze_3d
-                                point_mm = np.array([g3d.x, g3d.y, g3d.z])
-                                direction = point_mm - origin_mm
-                                norm = np.linalg.norm(direction)
-                                if norm > 0:
-                                    direction_unit = direction / norm
-                                    if sol_offset_pitch != 0 or sol_offset_yaw != 0:
-                                        cp, sp = math.cos(sol_offset_pitch), math.sin(sol_offset_pitch)
-                                        cy_r, sy_r = math.cos(sol_offset_yaw), math.sin(sol_offset_yaw)
-                                        Rp = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]])
-                                        Ry = np.array([[cy_r, 0, sy_r], [0, 1, 0], [-sy_r, 0, cy_r]])
-                                        direction_unit = Ry @ Rp @ direction_unit
-                                    origin_m = origin_mm / 1000.0
-                                    screen_pt_m = sol_projector.project_gaze_to_screen(origin_m, direction_unit)
-                                    if screen_pt_m is not None:
-                                        pix = sol_projector.physical_to_pixels(screen_pt_m, W, phy_w_m)
-                                        if pix:
-                                            sol_pt = (int(pix[0]), int(pix[1]))
-                                            sol_debug_counters['valid_gaze'] += 1
-                        except Exception:
-                            sol_debug_counters['attribute_error'] += 1
-
-                        if sol_pt:
-                            sol_last_valid_pt = sol_pt
-                            sol_last_gaze_ts = time.time()
-
-                    # Cache fallback
-                    if not got_new_gaze and sol_last_valid_pt and sol_last_gaze_ts and (time.time() - sol_last_gaze_ts < SOL_CACHE_TIMEOUT):
+                    if sol_raw_data:
+                        sol_debug_counters['frames_with_gaze_data'] += 1
+                    if sol_pt:
+                        sol_debug_counters['valid_gaze'] += 1
+                        sol_last_valid_pt = sol_pt
+                        sol_last_gaze_ts = time.time()
+                    elif sol_last_valid_pt and sol_last_gaze_ts and (time.time() - sol_last_gaze_ts < SOL_CACHE_TIMEOUT):
                         sol_pt = sol_last_valid_pt
                         sol_debug_counters['used_cached_gaze'] += 1
 
@@ -3492,40 +3658,75 @@ def run_vf_test(cfg, sol_context=None):
 
                 pygame.display.flip()
 
-                # Recording
+                # Recording (matching VA test pattern)
+                wb_f = get_webcam_frame()
+                rec_screen = cfg.get('rec_webcam') or cfg.get('rec_sol_data')
+                sol_f = sol_frame_numpy if cfg.get('rec_sol_raw_video') else None
                 recorder.process_and_record(
-                    None,
-                    win if (cfg.get('rec_webcam') or cfg.get('rec_sol_data')) else None,
+                    wb_f,
+                    win if rec_screen else None,
                     stim_pos=stim,
                     webcam_gaze=webcam_pt,
-                    sol_gaze=sol_pt if cfg.get('rec_sol_data') else None,
-                    sol_raw=sol_pt if cfg.get('rec_sol_data') else None,
-                    sol_frame=sol_frame_numpy,
+                    sol_mapped_gaze=sol_pt if cfg.get('rec_sol_data') else None,
+                    sol_raw_gaze=sol_raw_pt if cfg.get('rec_sol_data') else None,
+                    sol_raw_gaze_data=sol_raw_data if cfg.get('rec_sol_data') else None,
+                    sol_frame=sol_f,
                     is_correct=passed
                 )
                 clock.tick(60)
 
             results.append({"stim_index": idx + 1, "result": "PASS" if passed else "FAIL"})
 
-            # Feedback
-            win.fill((0, 0, 0))
-            txt = font.render("PASS" if passed else "FAIL", True, (0, 255, 0) if passed else (255, 0, 0))
-            win.blit(txt, (cx - txt.get_width() // 2, cy - txt.get_height() // 2))
-            pygame.display.flip()
-            t_wait = time.time()
-            while time.time() - t_wait < 1.0:
+            # Feedback (with recording, matching VA test)
+            fb_start = time.time()
+            while time.time() - fb_start < 1.0:
                 pygame.event.pump()
-                time.sleep(0.05)
+                win.fill((0, 0, 0))
+                draw_aruco(win)
+                txt = font.render("PASS" if passed else "FAIL", True, (0, 255, 0) if passed else (255, 0, 0))
+                win.blit(txt, (cx - txt.get_width() // 2, cy - txt.get_height() // 2))
+
+                # Collect gaze and draw marker
+                wg_pt, sol_m, sol_r, sol_rd, sol_sf = collect_gaze()
+                disp_pt = wg_pt if cfg.get('eval_source', 'Webcam') == "Webcam" else sol_m
+                if show_gaze and disp_pt:
+                    pygame.draw.circle(win, gaze_color, disp_pt, gaze_radius, gaze_width)
+
+                pygame.display.flip()
+
+                # Record
+                try:
+                    if recorder and recorder.running:
+                        wb_f = get_webcam_frame()
+                        rec_screen = cfg.get('rec_webcam') or cfg.get('rec_sol_data')
+                        sol_f = sol_sf if cfg.get('rec_sol_raw_video') else None
+                        recorder.process_and_record(
+                            wb_f,
+                            win if rec_screen else None,
+                            webcam_gaze=wg_pt,
+                            sol_mapped_gaze=sol_m if cfg.get('rec_sol_data') else None,
+                            sol_raw_gaze=sol_r if cfg.get('rec_sol_data') else None,
+                            sol_raw_gaze_data=sol_rd if cfg.get('rec_sol_data') else None,
+                            sol_frame=sol_f,
+                            is_correct=passed
+                        )
+                except Exception as e:
+                    print(f"[VF feedback_recorder] Error: {e}")
+                clock.tick(30)
 
             # Log trial event
             if hasattr(recorder, 'log_trial_event'):
-                recorder.log_trial_event({
-                    'trial': idx + 1,
-                    'stim_pos': stim,
-                    'result': 'PASS' if passed else 'FAIL',
-                    'dwell_sec': dwell_sec,
-                    'timeout_sec': timeout_sec,
-                })
+                recorder.log_trial_event(
+                    trial_number=idx + 1,
+                    cpd=0,
+                    side="VF",
+                    start_timestamp=t0,
+                    end_timestamp=time.time(),
+                    result="PASS" if passed else "FAIL",
+                    stim_x=stim[0],
+                    stim_y=stim[1],
+                    eval_source=cfg.get('eval_source', 'Webcam')
+                )
 
         # Print Sol stats
         if cfg['enable_sol'] and sol_debug_counters['total_frames'] > 0:
@@ -3720,6 +3921,12 @@ def run_test(cfg, sol_context=None):
 
             sol_projector = ScreenProjector3D(cam_matrix, dist_coeffs, adict, smoothing_factor=cfg['sol_pose_smooth'])
 
+            # Restore cached homography from Sol Preview for immediate gaze availability
+            cached_H = sol_context.get('cached_homography') if sol_context else None
+            if cached_H is not None:
+                sol_projector.set_homography(cached_H)
+                print(f"[VA Sol] Restored cached homography from preview")
+
             # Set 2D gaze smoothing factor and reset smoothing state
             sol_projector.set_gaze_2d_smoothing_factor(cfg.get('sol_gaze_smooth', 0.15))
             sol_projector.reset_gaze_2d_smoothing()
@@ -3787,7 +3994,7 @@ def run_test(cfg, sol_context=None):
             if frame_obj:
                 result = None
                 if hasattr(frame_obj, 'img'):
-                     result = frame_obj.img # Sol SDK (v2) Frame has .img (numpy)
+                     result = frame_obj.img.copy() # Sol SDK (v2) Frame has .img (numpy)
 
                 # Legacy / Buffer Fallback
                 elif hasattr(frame_obj, 'get_buffer'):
@@ -3803,7 +4010,7 @@ def run_test(cfg, sol_context=None):
                         buf = frame_obj.get_buffer()
                         arr = np.frombuffer(buf, dtype=np.uint8)
                         arr = arr.reshape((h, w, 3))
-                        result = arr
+                        result = arr.copy()
                     except Exception as e:
                         print(f"Sol Frame Convert Err: {e}")
                         return None
@@ -4759,6 +4966,7 @@ if __name__ == '__main__':
                     'gaze_queue': s.sol_gaze_queue,
                     'scene_queue': s.sol_scene_queue,
                     'cam_params': s.sol_cam_params,
+                    'cached_homography': s.sol_cached_homography,
                 }
 
             try:

@@ -335,6 +335,53 @@ def mean_color_rgb(light, dark):
     d = np.array(dark,  dtype=np.uint16)
     return tuple(((l + d) // 2).astype(np.uint8))
 
+# ---------- VF Test Helpers ----------
+VF_ANGULAR_DIAMETERS = {
+    "Goldmann II":   0.43,
+    "Goldmann III":  0.64,
+    "Goldmann IV":   0.86,
+    "Goldmann V":    1.72
+}
+VF_PASS_DWELL_SEC = 2.0
+VF_TIMEOUT_SEC    = 5.0
+
+def vf_angular_to_pixel_diameter(angle_deg, dist_cm, px_per_cm):
+    size_cm = 2 * dist_cm * math.tan(math.radians(angle_deg / 2))
+    return int(size_cm * px_per_cm)
+
+def vf_get_quadrant(x, y, cx, cy):
+    if x > cx and y < cy: return 1
+    if x < cx and y < cy: return 2
+    if x < cx and y > cy: return 3
+    if x > cx and y > cy: return 4
+    return None
+
+def vf_generate_points(n, max_deg_horizon, max_deg_vertical):
+    if n == 5:
+        return [(0, 0), (max_deg_horizon, max_deg_vertical), (-max_deg_horizon, max_deg_vertical),
+                (max_deg_horizon, -max_deg_vertical), (-max_deg_horizon, -max_deg_vertical)]
+    if n == 9:
+        return [(0, max_deg_vertical), (max_deg_horizon, max_deg_vertical), (-max_deg_horizon, max_deg_vertical),
+                (max_deg_horizon, -max_deg_vertical), (-max_deg_horizon, -max_deg_vertical), (max_deg_horizon, 0),
+                (-max_deg_horizon, 0), (0, -max_deg_vertical), (0, 0)]
+    if n == 13:
+        return [
+            (0, 0), (max_deg_horizon, 0), (-max_deg_horizon, 0), (0, max_deg_vertical), (0, -max_deg_vertical),
+            (max_deg_horizon, max_deg_vertical), (-max_deg_horizon, max_deg_vertical),
+            (max_deg_horizon, -max_deg_vertical), (-max_deg_horizon, -max_deg_vertical),
+            (max_deg_horizon, max_deg_vertical / 2), (-max_deg_horizon, max_deg_vertical / 2),
+            (max_deg_horizon, -max_deg_vertical / 2), (-max_deg_horizon, -max_deg_vertical / 2)
+        ]
+    raise ValueError("VF stim_points must be 5, 9, or 13")
+
+def vf_convert_positions_to_pixels(deg_pts, w, h, px_per_cm, dist_cm, diameter_px):
+    d2p = lambda d: int(px_per_cm * math.tan(math.radians(d)) * dist_cm)
+    raw = [(w // 2 + d2p(x), h // 2 - d2p(y)) for x, y in deg_pts]
+    margin = diameter_px // 2 + 10
+    right = w - margin
+    return [(max(margin, min(x, right)), max(margin, min(y, h - margin))) for x, y in raw]
+
+# ---------- VA Grating Helpers ----------
 def prepare_patch_grid(rad):
     diam = 2 * rad
     yy, xx = np.mgrid[0:diam, 0:diam]
@@ -518,7 +565,7 @@ class ScrollableFrame(ttk.Frame):
 class SettingsWindow(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("VA Test Settings (Optimization)")
+        self.title("Eye Tracking Test Settings")
         self.resizable(True, True)
         self.minsize(600, 400)  # Ensure buttons always visible
 
@@ -630,6 +677,21 @@ class SettingsWindow(tk.Tk):
 
         # [NEW] Paper Color Mode - gray bg, black/white grating, white border
         self.paper_color_var = tk.BooleanVar(value=False)
+
+        # [NEW] Experiment Type (VA or VF)
+        self.experiment_type_var = tk.StringVar(value="VA")
+
+        # [NEW] VF-specific Vars
+        self.vf_stim_path_var = tk.StringVar(value="pikachu.png")
+        self.vf_goldmann_var = tk.StringVar(value="Goldmann IV")
+        self.vf_stim_points_var = tk.StringVar(value="9")
+        self.vf_threshold_var = tk.StringVar(value="500")
+        self.vf_timeout_var = tk.StringVar(value="5.0")
+        self.vf_dwell_var = tk.StringVar(value="2.0")
+        self.vf_rotate_var = tk.BooleanVar(value=False)
+        self.vf_rot_speed_var = tk.StringVar(value="90.0")
+        self.vf_max_deg_h_var = tk.StringVar(value="15")
+        self.vf_max_deg_v_var = tk.StringVar(value="10")
 
         # [NEW] Sol Offset Calibration Vars
         self.sol_offset_target_img_var = tk.StringVar(value="刺激源圖片選擇/ball.jpg")
@@ -953,6 +1015,15 @@ class SettingsWindow(tk.Tk):
     def build_general_tab(self, parent, l_font, e_font):
         pad = self.ui_pad  # Use dynamic padding
 
+        # ── Section 0: Experiment Type ──
+        grp_type = ttk.LabelFrame(parent, text="Experiment Type"); grp_type.pack(fill="x", padx=10, pady=5)
+        ttk.Label(grp_type, text="Select Experiment:", font=l_font).grid(row=0, column=0, sticky="w", **pad)
+        cmb_type = ttk.Combobox(grp_type, textvariable=self.experiment_type_var,
+                                values=["VA", "VF"], state="readonly", font=e_font, width=10)
+        cmb_type.grid(row=0, column=1, sticky="w", **pad)
+        self.lbl_exp_desc = ttk.Label(grp_type, text="VA: Visual Acuity (two circles with grating)", font=l_font)
+        self.lbl_exp_desc.grid(row=0, column=2, sticky="w", padx=10)
+
         # ── Section 1: User & Tracker ──
         grp_user = ttk.LabelFrame(parent, text="User & Tracker"); grp_user.pack(fill="x", padx=10, pady=5)
         r = 0
@@ -972,48 +1043,92 @@ class SettingsWindow(tk.Tk):
 
         ttk.Checkbutton(grp_user, text="Show Gaze Marker during Test", variable=self.show_gaze_marker_var).grid(row=r, column=0, columnspan=2, sticky="w", **pad); r += 1
 
-        # ── Section 2: Stimulus ──
-        grp_stim = ttk.LabelFrame(parent, text="Stimulus"); grp_stim.pack(fill="x", padx=10, pady=5)
+        # ── Section 2a: VA Stimulus (shown when VA selected) ──
+        self.grp_va_stim = ttk.LabelFrame(parent, text="VA Stimulus")
+        self.grp_va_stim.pack(fill="x", padx=10, pady=5)
         r = 0
-        ttk.Label(grp_stim, text="Stimulus Duration (s):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
-        ttk.Spinbox(grp_stim, textvariable=self.stim_var, from_=0.5, to=30.0, increment=0.1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
+        ttk.Label(self.grp_va_stim, text="Stimulus Duration (s):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(self.grp_va_stim, textvariable=self.stim_var, from_=0.5, to=30.0, increment=0.1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
 
-        ttk.Label(grp_stim, text="Pass Duration (s):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
-        ttk.Spinbox(grp_stim, textvariable=self.pass_dur_var, from_=0.1, to=10.0, increment=0.1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
+        ttk.Label(self.grp_va_stim, text="Pass Duration (s):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(self.grp_va_stim, textvariable=self.pass_dur_var, from_=0.1, to=10.0, increment=0.1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
 
-        ttk.Label(grp_stim, text="Blank Duration (s):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
-        ttk.Spinbox(grp_stim, textvariable=self.blank_var, from_=0.2, to=10.0, increment=0.1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
+        ttk.Label(self.grp_va_stim, text="Blank Duration (s):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(self.grp_va_stim, textvariable=self.blank_var, from_=0.2, to=10.0, increment=0.1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
 
-        ttk.Label(grp_stim, text="Circle Radius (px):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
-        ttk.Spinbox(grp_stim, textvariable=self.rad_var, from_=50, to=800, increment=10, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
+        ttk.Label(self.grp_va_stim, text="Circle Radius (px):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(self.grp_va_stim, textvariable=self.rad_var, from_=50, to=800, increment=10, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
 
-        rot_frame = ttk.Frame(grp_stim)
+        rot_frame = ttk.Frame(self.grp_va_stim)
         rot_frame.grid(row=r, column=0, columnspan=3, sticky="w", **pad)
         ttk.Checkbutton(rot_frame, text="Rotate Stimulus", variable=self.rotate_var).pack(side="left")
         ttk.Label(rot_frame, text="Speed (deg/s):", font=l_font).pack(side="left", padx=(20, 5))
         ttk.Spinbox(rot_frame, textvariable=self.rot_speed_var, from_=0, to=2000, increment=10, width=8).pack(side="left")
 
-        # ── Section 3: Colors & Display ──
-        grp_color = ttk.LabelFrame(parent, text="Colors & Display"); grp_color.pack(fill="x", padx=10, pady=5)
+        # ── Section 2b: VF Stimulus (shown when VF selected) ──
+        self.grp_vf_stim = ttk.LabelFrame(parent, text="VF Stimulus")
+        # Initially hidden (will be managed by _on_experiment_type_changed)
+        r = 0
+        ttk.Label(self.grp_vf_stim, text="Stimulus Image:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        vf_img_frame = ttk.Frame(self.grp_vf_stim); vf_img_frame.grid(row=r, column=1, sticky="w", **pad)
+        ttk.Entry(vf_img_frame, textvariable=self.vf_stim_path_var, font=e_font, width=25).pack(side="left")
+        def _browse_vf_img():
+            p = filedialog.askopenfilename(filetypes=[("Images", "*.png;*.jpg;*.jpeg;*.bmp"), ("All", "*.*")])
+            if p: self.vf_stim_path_var.set(p)
+        ttk.Button(vf_img_frame, text="...", command=_browse_vf_img, width=4).pack(side="left", padx=5); r += 1
+
+        ttk.Label(self.grp_vf_stim, text="Goldmann Size:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Combobox(self.grp_vf_stim, textvariable=self.vf_goldmann_var,
+                     values=["Goldmann II", "Goldmann III", "Goldmann IV", "Goldmann V"],
+                     state="readonly", font=e_font, width=15).grid(row=r, column=1, sticky="w", **pad); r += 1
+
+        ttk.Label(self.grp_vf_stim, text="Stimulus Points:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Combobox(self.grp_vf_stim, textvariable=self.vf_stim_points_var,
+                     values=["5", "9", "13"], state="readonly", font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
+
+        ttk.Label(self.grp_vf_stim, text="Max Horizontal (deg):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(self.grp_vf_stim, textvariable=self.vf_max_deg_h_var, from_=1, to=30, increment=1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
+
+        ttk.Label(self.grp_vf_stim, text="Max Vertical (deg):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(self.grp_vf_stim, textvariable=self.vf_max_deg_v_var, from_=1, to=30, increment=1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
+
+        ttk.Label(self.grp_vf_stim, text="Threshold Distance (px):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(self.grp_vf_stim, textvariable=self.vf_threshold_var, from_=50, to=2000, increment=50, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
+
+        ttk.Label(self.grp_vf_stim, text="Timeout (s):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(self.grp_vf_stim, textvariable=self.vf_timeout_var, from_=1.0, to=30.0, increment=0.5, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
+
+        ttk.Label(self.grp_vf_stim, text="Dwell Time to Pass (s):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Spinbox(self.grp_vf_stim, textvariable=self.vf_dwell_var, from_=0.5, to=10.0, increment=0.1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
+
+        vf_rot_frame = ttk.Frame(self.grp_vf_stim)
+        vf_rot_frame.grid(row=r, column=0, columnspan=3, sticky="w", **pad)
+        ttk.Checkbutton(vf_rot_frame, text="Rotate Stimulus", variable=self.vf_rotate_var).pack(side="left")
+        ttk.Label(vf_rot_frame, text="Speed (deg/s):", font=l_font).pack(side="left", padx=(20, 5))
+        ttk.Spinbox(vf_rot_frame, textvariable=self.vf_rot_speed_var, from_=0, to=720, increment=10, width=8).pack(side="left")
+
+        # ── Section 3: Colors & Display (VA only) ──
+        self.grp_color = ttk.LabelFrame(parent, text="Colors & Display")
+        self.grp_color.pack(fill="x", padx=10, pady=5)
         r = 0
 
         def choose_color(tv):
             c = colorchooser.askcolor()[0]
             if c: tv.set(f"{int(c[0])},{int(c[1])},{int(c[2])}")
 
-        ttk.Label(grp_color, text="Bright Color:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
-        ttk.Entry(grp_color, textvariable=self.color_light_var, font=e_font, width=15).grid(row=r, column=1, sticky="w", **pad)
-        ttk.Button(grp_color, text="Pick", command=lambda: choose_color(self.color_light_var)).grid(row=r, column=2, **pad); r += 1
+        ttk.Label(self.grp_color, text="Bright Color:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Entry(self.grp_color, textvariable=self.color_light_var, font=e_font, width=15).grid(row=r, column=1, sticky="w", **pad)
+        ttk.Button(self.grp_color, text="Pick", command=lambda: choose_color(self.color_light_var)).grid(row=r, column=2, **pad); r += 1
 
-        ttk.Label(grp_color, text="Dark Color:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
-        ttk.Entry(grp_color, textvariable=self.color_dark_var, font=e_font, width=15).grid(row=r, column=1, sticky="w", **pad)
-        ttk.Button(grp_color, text="Pick", command=lambda: choose_color(self.color_dark_var)).grid(row=r, column=2, **pad); r += 1
+        ttk.Label(self.grp_color, text="Dark Color:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Entry(self.grp_color, textvariable=self.color_dark_var, font=e_font, width=15).grid(row=r, column=1, sticky="w", **pad)
+        ttk.Button(self.grp_color, text="Pick", command=lambda: choose_color(self.color_dark_var)).grid(row=r, column=2, **pad); r += 1
 
-        ttk.Label(grp_color, text="Background Color:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
-        ttk.Entry(grp_color, textvariable=self.bg_color_var, font=e_font, width=15).grid(row=r, column=1, sticky="w", **pad)
-        ttk.Button(grp_color, text="Pick", command=lambda: choose_color(self.bg_color_var)).grid(row=r, column=2, **pad); r += 1
+        ttk.Label(self.grp_color, text="Background Color:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Entry(self.grp_color, textvariable=self.bg_color_var, font=e_font, width=15).grid(row=r, column=1, sticky="w", **pad)
+        ttk.Button(self.grp_color, text="Pick", command=lambda: choose_color(self.bg_color_var)).grid(row=r, column=2, **pad); r += 1
 
-        ttk.Checkbutton(grp_color, text="Paper Color Mode", variable=self.paper_color_var).grid(row=r, column=0, columnspan=3, sticky="w", **pad)
+        ttk.Checkbutton(self.grp_color, text="Paper Color Mode", variable=self.paper_color_var).grid(row=r, column=0, columnspan=3, sticky="w", **pad)
 
         # ── Section 4: Screen & Viewing ──
         grp_screen = ttk.LabelFrame(parent, text="Screen & Viewing"); grp_screen.pack(fill="x", padx=10, pady=5)
@@ -1051,6 +1166,27 @@ class SettingsWindow(tk.Tk):
 
         ttk.Label(grp_inter, text="Background Hold (s):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
         ttk.Spinbox(grp_inter, textvariable=self.bg_after_inter_dur_var, from_=0, to=10, increment=0.1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad)
+
+        # Wire experiment type switching
+        self.experiment_type_var.trace_add("write", lambda *a: self._on_experiment_type_changed())
+        self._on_experiment_type_changed()  # Apply initial visibility
+
+    def _on_experiment_type_changed(self):
+        """Show/hide experiment-specific settings based on selected type."""
+        exp_type = self.experiment_type_var.get()
+        # Forget all experiment-specific sections first
+        for w in [self.grp_va_stim, self.grp_vf_stim, self.grp_color]:
+            w.pack_forget()
+        # Find the User & Tracker section (always second child after Experiment Type)
+        children = self.tab_general.winfo_children()
+        anchor = children[1]  # grp_user (index 0=grp_type, 1=grp_user)
+        if exp_type == "VF":
+            self.grp_vf_stim.pack(fill="x", padx=10, pady=5, after=anchor)
+            self.lbl_exp_desc.config(text="VF: Visual Field (moving stimulus)")
+        else:
+            self.grp_va_stim.pack(fill="x", padx=10, pady=5, after=anchor)
+            self.grp_color.pack(fill="x", padx=10, pady=5, after=self.grp_va_stim)
+            self.lbl_exp_desc.config(text="VA: Visual Acuity (two circles with grating)")
 
     def build_sol_tab(self, parent, l_font, e_font):
         pad = self.ui_pad  # Use dynamic padding
@@ -2683,6 +2819,21 @@ Controls: SPACE = Record point, Q = Cancel"""
             'screen_y': user_scr.get('y', 0),
             'screen_w': user_scr['width'],
             'screen_h': user_scr['height'],
+
+            # Experiment type
+            'experiment_type': self.experiment_type_var.get(),
+
+            # VF-specific settings
+            'vf_stim_path': self.vf_stim_path_var.get().strip(),
+            'vf_goldmann': self.vf_goldmann_var.get(),
+            'vf_stim_points': self.safe_get_int(self.vf_stim_points_var, 9),
+            'vf_threshold': self.safe_get_int(self.vf_threshold_var, 500),
+            'vf_timeout': self.safe_get_float(self.vf_timeout_var, 5.0),
+            'vf_dwell': self.safe_get_float(self.vf_dwell_var, 2.0),
+            'vf_rotate': self.vf_rotate_var.get(),
+            'vf_rot_speed': self.safe_get_float(self.vf_rot_speed_var, 90.0),
+            'vf_max_deg_h': self.safe_get_int(self.vf_max_deg_h_var, 15),
+            'vf_max_deg_v': self.safe_get_int(self.vf_max_deg_v_var, 10),
         }
 
         # Cancel pending timers while test runs
@@ -2761,6 +2912,21 @@ Controls: SPACE = Record point, Q = Cancel"""
             'rec_sol_raw_video': self.rec_sol_raw_video_var.get(),
             'show_gaze_marker': self.show_gaze_marker_var.get(),
             'paper_color': self.paper_color_var.get(),
+
+            # Experiment type
+            'experiment_type': self.experiment_type_var.get(),
+
+            # VF-specific settings
+            'vf_stim_path': self.vf_stim_path_var.get(),
+            'vf_goldmann': self.vf_goldmann_var.get(),
+            'vf_stim_points': self.vf_stim_points_var.get(),
+            'vf_threshold': self.vf_threshold_var.get(),
+            'vf_timeout': self.vf_timeout_var.get(),
+            'vf_dwell': self.vf_dwell_var.get(),
+            'vf_rotate': self.vf_rotate_var.get(),
+            'vf_rot_speed': self.vf_rot_speed_var.get(),
+            'vf_max_deg_h': self.vf_max_deg_h_var.get(),
+            'vf_max_deg_v': self.vf_max_deg_v_var.get(),
         }
 
     def _auto_save_settings(self):
@@ -2801,6 +2967,12 @@ Controls: SPACE = Record point, Q = Cancel"""
             self.rec_resolution_var, self.rec_webcam_var, self.rec_sol_data_var,
             self.rec_sol_raw_video_var,
             self.camera_idx_var, self.show_gaze_marker_var, self.paper_color_var,
+            # Experiment type + VF settings
+            self.experiment_type_var,
+            self.vf_stim_path_var, self.vf_goldmann_var, self.vf_stim_points_var,
+            self.vf_threshold_var, self.vf_timeout_var, self.vf_dwell_var,
+            self.vf_rotate_var, self.vf_rot_speed_var,
+            self.vf_max_deg_h_var, self.vf_max_deg_v_var,
         ]
         if hasattr(self, 'sol_preview_screen_var'):
             tracked_vars.append(self.sol_preview_screen_var)
@@ -2870,6 +3042,21 @@ Controls: SPACE = Record point, Q = Cancel"""
             if 'show_gaze_marker' in data: self.show_gaze_marker_var.set(data['show_gaze_marker'])
             if 'paper_color' in data: self.paper_color_var.set(data['paper_color'])
 
+            # Experiment type
+            if 'experiment_type' in data: self.experiment_type_var.set(data['experiment_type'])
+
+            # VF-specific settings
+            if 'vf_stim_path' in data: self.vf_stim_path_var.set(data['vf_stim_path'])
+            if 'vf_goldmann' in data: self.vf_goldmann_var.set(data['vf_goldmann'])
+            if 'vf_stim_points' in data: self.vf_stim_points_var.set(str(data['vf_stim_points']))
+            if 'vf_threshold' in data: self.vf_threshold_var.set(str(data['vf_threshold']))
+            if 'vf_timeout' in data: self.vf_timeout_var.set(str(data['vf_timeout']))
+            if 'vf_dwell' in data: self.vf_dwell_var.set(str(data['vf_dwell']))
+            if 'vf_rotate' in data: self.vf_rotate_var.set(data['vf_rotate'])
+            if 'vf_rot_speed' in data: self.vf_rot_speed_var.set(str(data['vf_rot_speed']))
+            if 'vf_max_deg_h' in data: self.vf_max_deg_h_var.set(str(data['vf_max_deg_h']))
+            if 'vf_max_deg_v' in data: self.vf_max_deg_v_var.set(str(data['vf_max_deg_v']))
+
             print(f"[Settings] Auto-loaded from {LAST_SETTINGS_FILE}")
         except Exception as e:
             print(f"[Settings] Failed to auto-load: {e}")
@@ -2914,7 +3101,478 @@ def run_sol_worker(connector, on_connect, on_fail):
             except Exception:
                 pass
 
-# ---------- Main Experiment ----------
+# ---------- VF Experiment ----------
+def run_vf_test(cfg, sol_context=None):
+    """Run Visual Field (VF) test - moving stimulus across grid positions."""
+    import os as os_module
+
+    W = cfg.get('screen_w', 1920)
+    H = cfg.get('screen_h', 1080)
+    screen_x = cfg.get('screen_x', 0)
+    screen_y = cfg.get('screen_y', 0)
+    os_module.environ['SDL_VIDEO_WINDOW_POS'] = f"{screen_x},{screen_y}"
+    pygame.init()
+    win = pygame.display.set_mode((W, H), pygame.NOFRAME)
+    print(f"[VF Test] Window: {W}x{H} at ({screen_x},{screen_y}), NOFRAME mode")
+    ensure_pygame_focus()
+
+    cx, cy = W // 2, H // 2
+
+    # 1. Initialize Webcam Tracker
+    gf = None
+    webcam = None
+    if cfg['enable_webcam']:
+        profile_dir = Path(cfg['calib_dir'])
+        if not profile_dir.exists():
+            messagebox.showerror("Error", "Calibration folder missing")
+            pygame.quit()
+            return
+        dcfg = DefaultConfig()
+        dcfg.screen_size = np.array([W, H])
+        cid = cfg.get('camera_id', 0)
+        webcam = WebCamCamera(webcam_id=cid)
+        calib = SVRCalibration(model_save_path=str(profile_dir))
+        gf = GazeFollower(config=dcfg, calibration=calib, camera=webcam)
+        if not gf.calibration.has_calibrated:
+            messagebox.showerror("Error", "Calibration not found.")
+            pygame.quit()
+            return
+        ensure_pygame_focus()
+        gf.start_sampling()
+        time.sleep(0.1)
+
+    # 2. Initialize Sol Tracker
+    sol_connector = None
+    sol_projector = None
+    sol_gaze_queue = None
+    sol_scene_queue = None
+
+    sol_debug_counters = {
+        'total_frames': 0, 'gaze_queue_empty': 0, 'not_calibrated': 0,
+        'attribute_error': 0, 'projection_failed': 0, 'valid_gaze': 0,
+        'smoothed_gaze': 0, 'frames_with_gaze_data': 0, 'used_cached_gaze': 0,
+    }
+
+    sol_gaze_method = cfg.get('sol_gaze_method', '3D')
+    aruco_markers_px = {}
+    aruco_imgs = {}
+
+    if cfg['enable_sol'] and sol_context:
+        sol_connector = sol_context.get('connector')
+        sol_gaze_queue = sol_context.get('gaze_queue')
+        sol_scene_queue = sol_context.get('scene_queue')
+        cam_params = sol_context.get('cam_params') or {}
+
+        aruco_dict_map = {
+            "DICT_4X4_50": cv2.aruco.DICT_4X4_50, "DICT_4X4_100": cv2.aruco.DICT_4X4_100,
+            "DICT_4X4_250": cv2.aruco.DICT_4X4_250, "DICT_5X5_250": cv2.aruco.DICT_5X5_250,
+            "DICT_6X6_250": cv2.aruco.DICT_6X6_250,
+        }
+        selected_dict_id = aruco_dict_map.get(cfg.get('sol_aruco_dict', 'DICT_4X4_250'), cv2.aruco.DICT_4X4_250)
+        adict = cv2.aruco.getPredefinedDictionary(selected_dict_id)
+        sol_cfg = {
+            'marker_k': cfg.get('sol_marker_k', 6),
+            'marker_n': cfg.get('sol_marker_n', 4),
+            'marker_pattern_size': cfg.get('sol_marker_size', 80),
+        }
+        aruco_markers_px, aruco_imgs = create_calibration_assets(W, H, adict, sol_cfg)
+        marker_container_size = sol_cfg['marker_pattern_size'] + 30
+
+        cam_matrix = cam_params.get('cam_matrix')
+        dist_coeffs = cam_params.get('dist_coeffs')
+        if cam_matrix is None:
+            cam_matrix = np.array([[W, 0, W / 2], [0, W, H / 2], [0, 0, 1]], dtype=float)
+            dist_coeffs = np.zeros(5)
+
+        sol_projector = ScreenProjector3D(cam_matrix, dist_coeffs, adict,
+                                          smoothing_factor=cfg.get('sol_pose_smooth', 0.1))
+
+        phy_w_m = cfg.get('sol_screen_phy_width_mm', 530.0) / 1000.0
+        sol_projector.start_background_detection(
+            sol_cfg['marker_pattern_size'] / W * phy_w_m,
+            aruco_markers_px, marker_container_size, W, H, phy_w_m
+        )
+
+        # Load 2D offset model if using 2D gaze method
+        sol_2d_offset_model = None
+        if sol_gaze_method == '2D':
+            try:
+                from sol_2d_offset_calibration import load_sol_2d_offset, Sol2DOffsetModel
+                offset_data = load_sol_2d_offset(cfg.get('user_name', 'anonymous'),
+                                                  Path(cfg.get('calib_dir', 'calibration_profiles')))
+                if offset_data:
+                    sol_2d_offset_model = Sol2DOffsetModel.from_dict(offset_data)
+                    print(f"[VF Sol] Loaded 2D offset model ({sol_2d_offset_model.num_points} pts)")
+            except Exception as e:
+                print(f"[VF Sol] Failed to load 2D offset: {e}")
+
+        # Load 3D offset if using 3D method
+        sol_offset_pitch = 0.0
+        sol_offset_yaw = 0.0
+        if sol_gaze_method == '3D':
+            try:
+                from sol_offset_calibration import load_sol_offset
+                sol_offset = load_sol_offset(cfg.get('user_name', 'anonymous'),
+                                              Path(cfg.get('calib_dir', 'calibration_profiles')))
+                if sol_offset:
+                    sol_offset_pitch = sol_offset.get('pitch_offset_rad', 0.0)
+                    sol_offset_yaw = sol_offset.get('yaw_offset_rad', 0.0)
+                    print(f"[VF Sol] Loaded 3D offset: pitch={math.degrees(sol_offset_pitch):.2f} yaw={math.degrees(sol_offset_yaw):.2f}")
+            except Exception as e:
+                print(f"[VF Sol] Failed to load 3D offset: {e}")
+
+        if sol_connector:
+            sol_connector.resume_scene_stream()
+
+    # 3. Setup Recorder
+    if cfg.get('practice_mode', False):
+        recorder = DummyRecorder()
+    else:
+        recorder = Recorder(output_dir="VF_output", subject_id=cfg.get('user_name', 'test'), is_va=False)
+
+    # 4. Load VF stimulus image
+    font = pygame.font.SysFont(None, 72)
+    small_font = pygame.font.SysFont(None, 24)
+    clock = pygame.time.Clock()
+
+    goldmann_angle = VF_ANGULAR_DIAMETERS.get(cfg.get('vf_goldmann', 'Goldmann IV'), 0.86)
+    sw_cm = cfg.get('screen_width_cm', 53.0)
+    dist_cm = cfg.get('view_distance_cm', 45.0)
+    px_per_cm = W / sw_cm
+    diameter_px = vf_angular_to_pixel_diameter(goldmann_angle, dist_cm, px_per_cm)
+    diameter_px = max(20, diameter_px)
+
+    stim_img = None
+    vf_stim_path = cfg.get('vf_stim_path', '')
+    if vf_stim_path and Path(vf_stim_path).exists():
+        try:
+            raw = pygame.image.load(vf_stim_path)
+            stim_img = pygame.transform.scale(raw, (diameter_px, diameter_px))
+        except Exception as e:
+            print(f"[VF Test] Failed to load stimulus image: {e}")
+
+    if stim_img is None:
+        # Default: bright circle
+        stim_img = pygame.Surface((diameter_px, diameter_px), pygame.SRCALPHA)
+        stim_img.fill((0, 0, 0, 0))
+        pygame.draw.circle(stim_img, (255, 255, 255), (diameter_px // 2, diameter_px // 2), diameter_px // 2)
+
+    # 5. Generate stimulus positions
+    pts_deg = vf_generate_points(cfg.get('vf_stim_points', 9),
+                                  cfg.get('vf_max_deg_h', 15),
+                                  cfg.get('vf_max_deg_v', 10))
+    stim_pts = vf_convert_positions_to_pixels(pts_deg, W, H, px_per_cm, dist_cm, diameter_px)
+
+    # 6. Load inter-trial image
+    inter_surf = None
+    inter_path = cfg.get('inter_interval_img_path', '')
+    if inter_path and Path(inter_path).exists():
+        try:
+            inter_surf = pygame.image.load(inter_path)
+        except Exception:
+            pass
+    inter_dur = cfg.get('inter_interval_img_dur', 1.5)
+
+    # ArUco drawing helper
+    def draw_aruco(surf):
+        if cfg['enable_sol']:
+            for mid, pos in aruco_markers_px.items():
+                if mid in aruco_imgs:
+                    cv_img = aruco_imgs[mid]
+                    if len(cv_img.shape) == 2:
+                        cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
+                    elif cv_img.shape[2] == 4:
+                        cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGRA2RGB)
+                    else:
+                        cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+                    pi = pygame.image.frombuffer(cv_img.tobytes(), cv_img.shape[1::-1], "RGB")
+                    surf.blit(pi, (pos[0], pos[1]))
+
+    # Inter-trial screen helper
+    def show_inter(dur):
+        t0 = time.time()
+        while time.time() - t0 < dur:
+            pygame.event.pump()
+            win.fill((0, 0, 0))
+            if inter_surf:
+                x = (W - inter_surf.get_width()) // 2
+                y = (H - inter_surf.get_height()) // 2
+                win.blit(inter_surf, (x, y))
+            else:
+                pygame.draw.line(win, (255, 255, 255), (cx - 40, cy), (cx + 40, cy), 4)
+                pygame.draw.line(win, (255, 255, 255), (cx, cy - 40), (cx, cy + 40), 4)
+            draw_aruco(win)
+            pygame.display.flip()
+            clock.tick(60)
+
+    # Sol gaze cache
+    sol_last_valid_pt = None
+    sol_last_gaze_ts = None
+    SOL_CACHE_TIMEOUT = 0.150
+
+    threshold = cfg.get('vf_threshold', 500)
+    do_rotate = cfg.get('vf_rotate', False)
+    rot_speed = cfg.get('vf_rot_speed', 90.0)
+    dwell_sec = cfg.get('vf_dwell', 2.0)
+    timeout_sec = cfg.get('vf_timeout', 5.0)
+    show_gaze = cfg.get('show_gaze_marker', True)
+    gaze_color = cfg.get('gaze_marker_color', (0, 255, 0))
+    gaze_radius = cfg.get('gaze_marker_radius', 30)
+    gaze_width = cfg.get('gaze_marker_width', 4)
+
+    results = []
+    running = True
+
+    try:
+        for idx, stim in enumerate(stim_pts):
+            if not running:
+                break
+
+            # Inter-trial
+            show_inter(inter_dur)
+
+            target_q = vf_get_quadrant(stim[0], stim[1], cx, cy)
+            dwell_start = None
+            passed = False
+            t0 = time.time()
+            last_t = t0
+            orig_stim_copy = stim_img.copy()
+            angle = 0
+
+            while running:
+                now = time.time()
+                dt = now - last_t
+                last_t = now
+                elapsed = now - t0
+
+                for ev in pygame.event.get():
+                    if ev.type == pygame.QUIT:
+                        running = False
+                    elif ev.type == pygame.KEYDOWN and ev.key == pygame.K_q:
+                        running = False
+
+                if not running:
+                    break
+
+                win.fill((0, 0, 0))
+                draw_aruco(win)
+
+                # Draw stimulus (optionally rotating)
+                if do_rotate:
+                    angle = (angle + rot_speed * dt) % 360
+                    disp = pygame.transform.rotate(orig_stim_copy, angle)
+                    rect = disp.get_rect(center=stim)
+                else:
+                    disp = orig_stim_copy
+                    rect = disp.get_rect(center=stim)
+                win.blit(disp, rect)
+
+                # --- Gaze Collection ---
+                webcam_pt = None
+                sol_pt = None
+                sol_frame_numpy = None
+
+                # Webcam
+                if gf:
+                    gi = gf.get_gaze_info()
+                    if gi and getattr(gi, 'status', False):
+                        c = getattr(gi, 'filtered_gaze_coordinates', None) or getattr(gi, 'gaze_coordinates', None)
+                        if c:
+                            webcam_pt = (int(c[0]), int(c[1]))
+
+                # Sol
+                got_new_gaze = False
+                if sol_connector and sol_projector:
+                    sol_debug_counters['total_frames'] += 1
+
+                    # Drain scene queue
+                    if sol_scene_queue:
+                        while True:
+                            try:
+                                frame = sol_scene_queue.get_nowait()
+                                if hasattr(frame, 'img') and frame.img is not None:
+                                    sol_frame_numpy = frame.img
+                                elif isinstance(frame, np.ndarray):
+                                    sol_frame_numpy = frame
+                            except queue.Empty:
+                                break
+                    if sol_frame_numpy is not None:
+                        sol_projector.submit_frame_for_pose(sol_frame_numpy)
+
+                    # Drain gaze queue
+                    latest_gaze = None
+                    if sol_gaze_queue:
+                        while True:
+                            try:
+                                latest_gaze = sol_gaze_queue.get_nowait()
+                                got_new_gaze = True
+                            except queue.Empty:
+                                break
+
+                    if latest_gaze:
+                        phy_w_m = cfg.get('sol_screen_phy_width_mm', 530.0) / 1000.0
+                        try:
+                            if sol_gaze_method == '2D' and sol_projector.is_homography_valid():
+                                raw_g2d = latest_gaze.combined.gaze_2d
+                                raw_pt = (raw_g2d.x, raw_g2d.y)
+                                screen_pt = sol_projector.project_gaze_2d_to_screen(raw_pt, apply_smoothing=True)
+                                if screen_pt:
+                                    sx, sy = int(screen_pt[0]), int(screen_pt[1])
+                                    if sol_2d_offset_model:
+                                        corrected = sol_2d_offset_model.apply_offset(raw_pt, screen_pt)
+                                        if corrected:
+                                            sx, sy = int(corrected[0]), int(corrected[1])
+                                    sol_pt = (sx, sy)
+                                    sol_debug_counters['valid_gaze'] += 1
+                            elif sol_gaze_method == '3D' and sol_projector.is_calibrated():
+                                left_o = latest_gaze.left_eye.gaze.origin
+                                right_o = latest_gaze.right_eye.gaze.origin
+                                origin_mm = np.array([(left_o.x + right_o.x) / 2, (left_o.y + right_o.y) / 2, (left_o.z + right_o.z) / 2])
+                                g3d = latest_gaze.combined.gaze_3d
+                                point_mm = np.array([g3d.x, g3d.y, g3d.z])
+                                direction = point_mm - origin_mm
+                                norm = np.linalg.norm(direction)
+                                if norm > 0:
+                                    direction_unit = direction / norm
+                                    if sol_offset_pitch != 0 or sol_offset_yaw != 0:
+                                        cp, sp = math.cos(sol_offset_pitch), math.sin(sol_offset_pitch)
+                                        cy_r, sy_r = math.cos(sol_offset_yaw), math.sin(sol_offset_yaw)
+                                        Rp = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]])
+                                        Ry = np.array([[cy_r, 0, sy_r], [0, 1, 0], [-sy_r, 0, cy_r]])
+                                        direction_unit = Ry @ Rp @ direction_unit
+                                    origin_m = origin_mm / 1000.0
+                                    screen_pt_m = sol_projector.project_gaze_to_screen(origin_m, direction_unit)
+                                    if screen_pt_m is not None:
+                                        pix = sol_projector.physical_to_pixels(screen_pt_m, W, phy_w_m)
+                                        if pix:
+                                            sol_pt = (int(pix[0]), int(pix[1]))
+                                            sol_debug_counters['valid_gaze'] += 1
+                        except Exception:
+                            sol_debug_counters['attribute_error'] += 1
+
+                        if sol_pt:
+                            sol_last_valid_pt = sol_pt
+                            sol_last_gaze_ts = time.time()
+
+                    # Cache fallback
+                    if not got_new_gaze and sol_last_valid_pt and sol_last_gaze_ts and (time.time() - sol_last_gaze_ts < SOL_CACHE_TIMEOUT):
+                        sol_pt = sol_last_valid_pt
+                        sol_debug_counters['used_cached_gaze'] += 1
+
+                # Evaluation
+                eval_pt = webcam_pt if cfg['eval_source'] == "Webcam" else sol_pt
+                if eval_pt:
+                    gx, gy = eval_pt
+                    curr_q = vf_get_quadrant(gx, gy, cx, cy)
+                    dist_px = math.hypot(stim[0] - gx, stim[1] - gy)
+
+                    if target_q is None or curr_q is None:
+                        inside = (dist_px <= threshold)
+                    else:
+                        inside = (curr_q == target_q)
+
+                    if inside:
+                        dwell_start = dwell_start or now
+                    else:
+                        dwell_start = None
+
+                    if show_gaze:
+                        pygame.draw.circle(win, gaze_color, (gx, gy), gaze_radius, gaze_width)
+
+                    if dwell_start and (now - dwell_start) >= dwell_sec:
+                        passed = True
+                        break
+
+                if elapsed > timeout_sec:
+                    break
+
+                pygame.display.flip()
+
+                # Recording
+                recorder.process_and_record(
+                    None,
+                    win if (cfg.get('rec_webcam') or cfg.get('rec_sol_data')) else None,
+                    stim_pos=stim,
+                    webcam_gaze=webcam_pt,
+                    sol_gaze=sol_pt if cfg.get('rec_sol_data') else None,
+                    sol_raw=sol_pt if cfg.get('rec_sol_data') else None,
+                    sol_frame=sol_frame_numpy,
+                    is_correct=passed
+                )
+                clock.tick(60)
+
+            results.append({"stim_index": idx + 1, "result": "PASS" if passed else "FAIL"})
+
+            # Feedback
+            win.fill((0, 0, 0))
+            txt = font.render("PASS" if passed else "FAIL", True, (0, 255, 0) if passed else (255, 0, 0))
+            win.blit(txt, (cx - txt.get_width() // 2, cy - txt.get_height() // 2))
+            pygame.display.flip()
+            t_wait = time.time()
+            while time.time() - t_wait < 1.0:
+                pygame.event.pump()
+                time.sleep(0.05)
+
+            # Log trial event
+            if hasattr(recorder, 'log_trial_event'):
+                recorder.log_trial_event({
+                    'trial': idx + 1,
+                    'stim_pos': stim,
+                    'result': 'PASS' if passed else 'FAIL',
+                    'dwell_sec': dwell_sec,
+                    'timeout_sec': timeout_sec,
+                })
+
+        # Print Sol stats
+        if cfg['enable_sol'] and sol_debug_counters['total_frames'] > 0:
+            print("\n" + "=" * 50)
+            print("VF TEST - SOL GAZE STATISTICS")
+            for key, value in sol_debug_counters.items():
+                pct = (value / sol_debug_counters['total_frames'] * 100) if key != 'total_frames' else 100
+                print(f"  {key}: {value} ({pct:.1f}%)")
+            print("=" * 50)
+
+        # Save results CSV
+        if results and not cfg.get('practice_mode', False):
+            import pandas as pd
+            df = pd.DataFrame(results)
+            Path("VF_output").mkdir(parents=True, exist_ok=True)
+            csv_path = f"VF_output/vf_{cfg.get('user_name', 'test')}.csv"
+            df.to_csv(csv_path, index=False)
+            print(f"[VF Test] Results saved to {csv_path}")
+
+        # Show summary
+        if results:
+            pass_count = sum(1 for r in results if r['result'] == 'PASS')
+            total = len(results)
+            win.fill((0, 0, 0))
+            summary = font.render(f"VF Test Complete: {pass_count}/{total} PASS", True, (255, 255, 255))
+            win.blit(summary, (cx - summary.get_width() // 2, cy - summary.get_height() // 2))
+            hint = small_font.render("Press Q to exit", True, (150, 150, 150))
+            win.blit(hint, (cx - hint.get_width() // 2, cy + 50))
+            pygame.display.flip()
+            waiting = True
+            while waiting:
+                for ev in pygame.event.get():
+                    if ev.type == pygame.QUIT or (ev.type == pygame.KEYDOWN and ev.key == pygame.K_q):
+                        waiting = False
+                clock.tick(30)
+
+    except Exception as e:
+        import traceback
+        print(f"[VF Test] Error: {e}")
+        traceback.print_exc()
+    finally:
+        if gf:
+            gf.stop_sampling()
+            gf.release()
+        if sol_projector:
+            sol_projector.stop_background_detection()
+        recorder.close()
+        pygame.quit()
+
+
+# ---------- VA Experiment ----------
 def run_test(cfg, sol_context=None):
     # Use real pixel dimensions from OS (not DPI-scaled pygame.display.Info)
     W = cfg.get('screen_w', 1920)
@@ -4100,12 +4758,16 @@ if __name__ == '__main__':
                 }
 
             try:
-                run_test(s.cfg, sol_ctx)
+                if s.cfg.get('experiment_type') == 'VF':
+                    run_vf_test(s.cfg, sol_ctx)
+                else:
+                    run_test(s.cfg, sol_ctx)
             except Exception as e:
                 import traceback
                 err_msg = traceback.format_exc()
-                print(f"CRITICAL ERROR IN RUN_TEST:\n{err_msg}")
-                with open("va_crash_log.txt", "w") as f:
+                exp_type = s.cfg.get('experiment_type', 'VA')
+                print(f"CRITICAL ERROR IN {exp_type} TEST:\n{err_msg}")
+                with open(f"{exp_type.lower()}_crash_log.txt", "w") as f:
                     f.write(err_msg)
                 try:
                     messagebox.showerror("Crash", f"An error occurred:\n{e}\nSee va_crash_log.txt")

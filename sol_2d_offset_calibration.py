@@ -412,12 +412,13 @@ class Sol2DOffsetModel:
         Train the IDW model using collected calibration points.
 
         Computes both pixel and angular offsets for each calibration point.
+        For 1-2 points, uses a constant average offset instead of IDW interpolation.
 
         Returns:
             True if training successful, False otherwise
         """
-        if len(self.calibration_points) < 3:
-            print(f"[Sol2DOffset] Need at least 3 calibration points, got {len(self.calibration_points)}")
+        if len(self.calibration_points) < 1:
+            print(f"[Sol2DOffset] Need at least 1 calibration point, got 0")
             return False
 
         # Check if angular mode is possible
@@ -426,7 +427,7 @@ class Sol2DOffsetModel:
             print(f"[Sol2DOffset] Falling back to pixel mode.")
             self.offset_mode = OFFSET_MODE_PIXEL
 
-        print(f"[Sol2DOffset] === TRAINING DATA (mode={self.offset_mode}) ===")
+        print(f"[Sol2DOffset] === TRAINING DATA (mode={self.offset_mode}, {len(self.calibration_points)} point(s)) ===")
         for i, point in enumerate(self.calibration_points):
             gaze = point['gaze_2d']
             target = point['target_pos']
@@ -435,20 +436,22 @@ class Sol2DOffsetModel:
             offset_y = gaze[1] - target[1]
             print(f"  {name}: gaze=({gaze[0]:.1f}, {gaze[1]:.1f}) -> target=({target[0]:.1f}, {target[1]:.1f}) | pixel_offset=({offset_x:.1f}, {offset_y:.1f})")
 
-        # Check for duplicate target positions
-        targets = [tuple(p['target_pos']) for p in self.calibration_points]
-        unique_targets = set(targets)
-        if len(unique_targets) < len(targets) * 0.8:
-            print(f"[Sol2DOffset] WARNING: Many duplicate target positions!")
+        # Validation only for 3+ points
+        if len(self.calibration_points) >= 3:
+            # Check for duplicate target positions
+            targets = [tuple(p['target_pos']) for p in self.calibration_points]
+            unique_targets = set(targets)
+            if len(unique_targets) < len(targets) * 0.8:
+                print(f"[Sol2DOffset] WARNING: Many duplicate target positions!")
 
-        # Check for reasonable target spread
-        target_xs = [t[0] for t in targets]
-        target_ys = [t[1] for t in targets]
-        x_range = max(target_xs) - min(target_xs)
-        y_range = max(target_ys) - min(target_ys)
-        print(f"[Sol2DOffset] Target range: X={x_range:.1f}px, Y={y_range:.1f}px")
-        if x_range < 100 or y_range < 100:
-            print(f"[Sol2DOffset] WARNING: Target positions have small spread")
+            # Check for reasonable target spread
+            target_xs = [t[0] for t in targets]
+            target_ys = [t[1] for t in targets]
+            x_range = max(target_xs) - min(target_xs)
+            y_range = max(target_ys) - min(target_ys)
+            print(f"[Sol2DOffset] Target range: X={x_range:.1f}px, Y={y_range:.1f}px")
+            if x_range < 100 or y_range < 100:
+                print(f"[Sol2DOffset] WARNING: Target positions have small spread")
 
         # Compute PIXEL offsets for each point (always computed for backup)
         for point in self.calibration_points:
@@ -457,7 +460,7 @@ class Sol2DOffsetModel:
             point['offset_x'] = target[0] - gaze[0]
             point['offset_y'] = target[1] - gaze[1]
 
-        # Compute average pixel offset as fallback
+        # Compute average pixel offset (used directly for 1-2 points, as fallback for 3+)
         offsets_x = [p['offset_x'] for p in self.calibration_points]
         offsets_y = [p['offset_y'] for p in self.calibration_points]
         self.avg_offset_x = float(np.mean(offsets_x))
@@ -482,7 +485,7 @@ class Sol2DOffsetModel:
                 point['gaze_yaw'] = gaze_yaw
                 point['gaze_pitch'] = gaze_pitch
 
-            # Compute average angular offset as fallback
+            # Compute average angular offset
             offsets_yaw = [p['offset_yaw'] for p in self.calibration_points]
             offsets_pitch = [p['offset_pitch'] for p in self.calibration_points]
             self.avg_offset_yaw = float(np.mean(offsets_yaw))
@@ -504,27 +507,29 @@ class Sol2DOffsetModel:
             else:
                 print(f"  {name}: pixel=({offset_x:.1f}, {offset_y:.1f})px, magnitude={offset_mag:.1f}px")
 
-        # Leave-one-out validation
-        errors = []
-        for i, point in enumerate(self.calibration_points):
-            gaze = point['gaze_2d']
-            if self.offset_mode == OFFSET_MODE_ANGULAR and self.has_camera_intrinsics():
-                pred_offset_yaw, pred_offset_pitch = self._idw_predict_angular_offset(gaze, exclude_index=i)
-                # Convert back to pixels to compute error
-                gaze_yaw, gaze_pitch = pixel_to_angle(gaze[0], gaze[1], self.fx, self.fy, self.cx, self.cy)
-                corrected_yaw = gaze_yaw + pred_offset_yaw
-                corrected_pitch = gaze_pitch + pred_offset_pitch
-                corrected_x, corrected_y = angle_to_pixel(corrected_yaw, corrected_pitch, self.fx, self.fy, self.cx, self.cy)
-                target = point['target_pos']
-                error = np.sqrt((corrected_x - target[0])**2 + (corrected_y - target[1])**2)
-            else:
-                pred_offset_x, pred_offset_y = self._idw_predict_pixel_offset(gaze, exclude_index=i)
-                error = np.sqrt((pred_offset_x - point['offset_x'])**2 + (pred_offset_y - point['offset_y'])**2)
-            errors.append(error)
+        # Leave-one-out validation (only meaningful with 3+ points)
+        if len(self.calibration_points) >= 3:
+            errors = []
+            for i, point in enumerate(self.calibration_points):
+                gaze = point['gaze_2d']
+                if self.offset_mode == OFFSET_MODE_ANGULAR and self.has_camera_intrinsics():
+                    pred_offset_yaw, pred_offset_pitch = self._idw_predict_angular_offset(gaze, exclude_index=i)
+                    gaze_yaw, gaze_pitch = pixel_to_angle(gaze[0], gaze[1], self.fx, self.fy, self.cx, self.cy)
+                    corrected_yaw = gaze_yaw + pred_offset_yaw
+                    corrected_pitch = gaze_pitch + pred_offset_pitch
+                    corrected_x, corrected_y = angle_to_pixel(corrected_yaw, corrected_pitch, self.fx, self.fy, self.cx, self.cy)
+                    target = point['target_pos']
+                    error = np.sqrt((corrected_x - target[0])**2 + (corrected_y - target[1])**2)
+                else:
+                    pred_offset_x, pred_offset_y = self._idw_predict_pixel_offset(gaze, exclude_index=i)
+                    error = np.sqrt((pred_offset_x - point['offset_x'])**2 + (pred_offset_y - point['offset_y'])**2)
+                errors.append(error)
 
-        mean_error = np.mean(errors)
-        max_error = np.max(errors)
-        print(f"[Sol2DOffset] IDW leave-one-out error ({self.offset_mode}): mean={mean_error:.2f}px, max={max_error:.2f}px")
+            mean_error = np.mean(errors)
+            max_error = np.max(errors)
+            print(f"[Sol2DOffset] IDW leave-one-out error ({self.offset_mode}): mean={mean_error:.2f}px, max={max_error:.2f}px")
+        else:
+            print(f"[Sol2DOffset] Using constant offset (< 3 points, IDW validation skipped)")
 
         # Print average offsets
         print(f"[Sol2DOffset] Average pixel offset: ({self.avg_offset_x:.1f}, {self.avg_offset_y:.1f})px")
@@ -535,7 +540,7 @@ class Sol2DOffsetModel:
         self.num_points = len(self.calibration_points)
         self.training_timestamp = datetime.now().isoformat()
 
-        print(f"[Sol2DOffset] Training complete: {len(self.calibration_points)} points, mode={self.offset_mode}")
+        print(f"[Sol2DOffset] Training complete: {len(self.calibration_points)} point(s), mode={self.offset_mode}")
 
         return True
 
@@ -1081,11 +1086,13 @@ class Sol2DOffsetCalibrator:
         """
         Finish calibration and train the model.
 
+        For 1-2 points, uses constant offset. For 3+, uses IDW interpolation.
+
         Returns:
             True if successful, False otherwise
         """
-        if len(self.model.calibration_points) < 3:
-            print(f"[Sol2DCalibrator] Not enough points: {len(self.model.calibration_points)}")
+        if len(self.model.calibration_points) < 1:
+            print(f"[Sol2DCalibrator] No calibration points recorded")
             return False
 
         return self.model.train()

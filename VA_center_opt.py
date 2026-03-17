@@ -1387,7 +1387,7 @@ class SettingsWindow(tk.Tk):
 5. Repeat for all calibration points.
 
 • 3D Method: Corrects angular offset (pitch/yaw) in camera frame.
-• 2D Method: Uses SVR model for position-dependent correction.
+• 2D Method: Uses IDW/constant offset for position-dependent correction.
 
 Controls: SPACE = Record point, Q = Cancel"""
 
@@ -1464,7 +1464,11 @@ Controls: SPACE = Record point, Q = Cancel"""
             num_points = offset_data.get('num_calibration_points', 0)
             timestamp = offset_data.get('calibration_timestamp', 'Unknown')
 
-            self.lbl_sol_2d_offset_status.config(text="Calibrated (SVR)")
+            if num_points <= 2:
+                method_label = "Calibrated (Constant Offset)"
+            else:
+                method_label = "Calibrated (IDW)"
+            self.lbl_sol_2d_offset_status.config(text=method_label)
             self.lbl_sol_2d_offset_points.config(text=f"({num_points} pts)")
             self.lbl_sol_offset_timestamp.config(text=f"Last Calibrated: {timestamp}")
         else:
@@ -1995,7 +1999,7 @@ Controls: SPACE = Record point, Q = Cancel"""
                         f"2D offset calibration complete!\n{len(calibrator.model.calibration_points)} points recorded."))
                 else:
                     self.after(0, lambda: messagebox.showerror("Calibration Failed",
-                        "Failed to train the SVR model. Please try again."))
+                        "Failed to train the offset model. Please try again."))
             else:
                 self.after(0, lambda: messagebox.showinfo("Calibration Cancelled", "2D offset calibration was cancelled."))
 
@@ -3646,7 +3650,7 @@ def run_test(cfg, sol_context=None):
         else:
             print(f"[Sol Offset] No 3D offset calibration found for user '{username}'.")
 
-        # Load 2D SVR offset model (for 2D gaze method)
+        # Load 2D offset model (for 2D gaze method)
         if SOL_2D_OFFSET_AVAILABLE:
             sol_2d_offset_data = load_sol_2d_offset(username, calib_dir)
             if sol_2d_offset_data and sol_2d_offset_data.get('model') and sol_2d_offset_data['model'].is_trained:

@@ -692,6 +692,7 @@ class SettingsWindow(tk.Tk):
         self.vf_rot_speed_var = tk.StringVar(value="90.0")
         self.vf_max_deg_h_var = tk.StringVar(value="15")
         self.vf_max_deg_v_var = tk.StringVar(value="10")
+        self.vf_bg_color_var = tk.StringVar(value="0,0,0")
 
         # [NEW] Sol Offset Calibration Vars
         self.sol_offset_target_img_var = tk.StringVar(value="刺激源圖片選擇/ball.jpg")
@@ -1107,6 +1108,18 @@ class SettingsWindow(tk.Tk):
         ttk.Label(vf_rot_frame, text="Speed (deg/s):", font=l_font).pack(side="left", padx=(20, 5))
         ttk.Spinbox(vf_rot_frame, textvariable=self.vf_rot_speed_var, from_=0, to=720, increment=10, width=8).pack(side="left")
 
+        # ── Section 2b: VF Colors & Display ──
+        self.grp_vf_color = ttk.LabelFrame(parent, text="VF Colors & Display")
+        r = 0
+
+        def choose_vf_color(tv):
+            c = colorchooser.askcolor()[0]
+            if c: tv.set(f"{int(c[0])},{int(c[1])},{int(c[2])}")
+
+        ttk.Label(self.grp_vf_color, text="Background Color:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        ttk.Entry(self.grp_vf_color, textvariable=self.vf_bg_color_var, font=e_font, width=15).grid(row=r, column=1, sticky="w", **pad)
+        ttk.Button(self.grp_vf_color, text="Pick", command=lambda: choose_vf_color(self.vf_bg_color_var)).grid(row=r, column=2, **pad)
+
         # ── Section 3: Colors & Display (VA only) ──
         self.grp_color = ttk.LabelFrame(parent, text="Colors & Display")
         self.grp_color.pack(fill="x", padx=10, pady=5)
@@ -1175,13 +1188,14 @@ class SettingsWindow(tk.Tk):
         """Show/hide experiment-specific settings based on selected type."""
         exp_type = self.experiment_type_var.get()
         # Forget all experiment-specific sections first
-        for w in [self.grp_va_stim, self.grp_vf_stim, self.grp_color]:
+        for w in [self.grp_va_stim, self.grp_vf_stim, self.grp_color, self.grp_vf_color]:
             w.pack_forget()
         # Find the User & Tracker section (always second child after Experiment Type)
         children = self.tab_general.winfo_children()
         anchor = children[1]  # grp_user (index 0=grp_type, 1=grp_user)
         if exp_type == "VF":
             self.grp_vf_stim.pack(fill="x", padx=10, pady=5, after=anchor)
+            self.grp_vf_color.pack(fill="x", padx=10, pady=5, after=self.grp_vf_stim)
             self.lbl_exp_desc.config(text="VF: Visual Field (moving stimulus)")
         else:
             self.grp_va_stim.pack(fill="x", padx=10, pady=5, after=anchor)
@@ -2838,6 +2852,7 @@ Controls: SPACE = Record point, Q = Cancel"""
             'vf_rot_speed': self.safe_get_float(self.vf_rot_speed_var, 90.0),
             'vf_max_deg_h': self.safe_get_int(self.vf_max_deg_h_var, 15),
             'vf_max_deg_v': self.safe_get_int(self.vf_max_deg_v_var, 10),
+            'vf_bg_color': self.parse_rgb(self.vf_bg_color_var.get(), (0,0,0)),
         }
 
         # Cancel pending timers while test runs
@@ -2931,6 +2946,7 @@ Controls: SPACE = Record point, Q = Cancel"""
             'vf_rot_speed': self.vf_rot_speed_var.get(),
             'vf_max_deg_h': self.vf_max_deg_h_var.get(),
             'vf_max_deg_v': self.vf_max_deg_v_var.get(),
+            'vf_bg_color': self.vf_bg_color_var.get(),
         }
 
     def _auto_save_settings(self):
@@ -3060,6 +3076,7 @@ Controls: SPACE = Record point, Q = Cancel"""
             if 'vf_rot_speed' in data: self.vf_rot_speed_var.set(str(data['vf_rot_speed']))
             if 'vf_max_deg_h' in data: self.vf_max_deg_h_var.set(str(data['vf_max_deg_h']))
             if 'vf_max_deg_v' in data: self.vf_max_deg_v_var.set(str(data['vf_max_deg_v']))
+            if 'vf_bg_color' in data: self.vf_bg_color_var.set(data['vf_bg_color'])
 
             print(f"[Settings] Auto-loaded from {LAST_SETTINGS_FILE}")
         except Exception as e:
@@ -3121,6 +3138,7 @@ def run_vf_test(cfg, sol_context=None):
     ensure_pygame_focus()
 
     cx, cy = W // 2, H // 2
+    vf_bg = to_rgb_tuple(cfg.get('vf_bg_color', (0, 0, 0)))
 
     # 1. Initialize Webcam Tracker
     gf = None
@@ -3438,7 +3456,7 @@ def run_vf_test(cfg, sol_context=None):
         t0 = time.time()
         while time.time() - t0 < dur:
             pygame.event.pump()
-            win.fill((0, 0, 0))
+            win.fill(vf_bg)
             if inter_surf:
                 x = (W - inter_surf.get_width()) // 2
                 y = (H - inter_surf.get_height()) // 2
@@ -3448,12 +3466,14 @@ def run_vf_test(cfg, sol_context=None):
                 pygame.draw.line(win, (255, 255, 255), (cx, cy - 40), (cx, cy + 40), 4)
             draw_aruco(win)
 
-            # Collect gaze and draw marker
+            # Collect gaze and update persistent display point
             wg_pt, sol_m, sol_r, sol_rd, sol_sf = collect_gaze()
             eval_source = cfg.get('eval_source', 'Webcam')
             disp_pt = wg_pt if eval_source == "Webcam" else sol_m
-            if show_gaze and disp_pt:
-                pygame.draw.circle(win, gaze_color, disp_pt, gaze_radius, gaze_width)
+            if disp_pt:
+                _display_gaze[0] = disp_pt
+            if show_gaze and _display_gaze[0] is not None:
+                pygame.draw.circle(win, gaze_color, _display_gaze[0], gaze_radius, gaze_width)
 
             pygame.display.flip()
 
@@ -3476,6 +3496,9 @@ def run_vf_test(cfg, sol_context=None):
     sol_last_valid_pt = None
     sol_last_gaze_ts = None
     SOL_CACHE_TIMEOUT = 0.150
+
+    # Persistent display gaze point (never cleared, only updated — prevents flicker)
+    _display_gaze = [None]
 
     threshold = cfg.get('vf_threshold', 500)
     do_rotate = cfg.get('vf_rotate', False)
@@ -3510,7 +3533,7 @@ def run_vf_test(cfg, sol_context=None):
                 break
 
             pygame.event.pump()
-            win.fill((0, 0, 0))
+            win.fill(vf_bg)
             # Fixation cross
             pygame.draw.line(win, (255, 255, 255), (cx - 40, cy), (cx + 40, cy), 4)
             pygame.draw.line(win, (255, 255, 255), (cx, cy - 40), (cx, cy + 40), 4)
@@ -3600,7 +3623,7 @@ def run_vf_test(cfg, sol_context=None):
                 if quit_requested:
                     break
 
-                win.fill((0, 0, 0))
+                win.fill(vf_bg)
                 draw_aruco(win)
 
                 # Draw stimulus (optionally rotating)
@@ -3629,8 +3652,12 @@ def run_vf_test(cfg, sol_context=None):
                         sol_pt = sol_last_valid_pt
                         sol_debug_counters['used_cached_gaze'] += 1
 
-                # Evaluation
+                # Update persistent display gaze (only update, never clear)
                 eval_pt = webcam_pt if cfg['eval_source'] == "Webcam" else sol_pt
+                if eval_pt:
+                    _display_gaze[0] = eval_pt
+
+                # Evaluation
                 if eval_pt:
                     gx, gy = eval_pt
                     curr_q = vf_get_quadrant(gx, gy, cx, cy)
@@ -3646,12 +3673,14 @@ def run_vf_test(cfg, sol_context=None):
                     else:
                         dwell_start = None
 
-                    if show_gaze:
-                        pygame.draw.circle(win, gaze_color, (gx, gy), gaze_radius, gaze_width)
-
                     if dwell_start and (now - dwell_start) >= dwell_sec:
                         passed = True
                         break
+
+                # Draw gaze marker from persistent point (prevents flicker)
+                if show_gaze and _display_gaze[0] is not None:
+                    gx, gy = _display_gaze[0]
+                    pygame.draw.circle(win, gaze_color, (gx, gy), gaze_radius, gaze_width)
 
                 if elapsed > timeout_sec:
                     break
@@ -3681,16 +3710,18 @@ def run_vf_test(cfg, sol_context=None):
             fb_start = time.time()
             while time.time() - fb_start < 1.0:
                 pygame.event.pump()
-                win.fill((0, 0, 0))
+                win.fill(vf_bg)
                 draw_aruco(win)
                 txt = font.render("PASS" if passed else "FAIL", True, (0, 255, 0) if passed else (255, 0, 0))
                 win.blit(txt, (cx - txt.get_width() // 2, cy - txt.get_height() // 2))
 
-                # Collect gaze and draw marker
+                # Collect gaze and update persistent display point
                 wg_pt, sol_m, sol_r, sol_rd, sol_sf = collect_gaze()
                 disp_pt = wg_pt if cfg.get('eval_source', 'Webcam') == "Webcam" else sol_m
-                if show_gaze and disp_pt:
-                    pygame.draw.circle(win, gaze_color, disp_pt, gaze_radius, gaze_width)
+                if disp_pt:
+                    _display_gaze[0] = disp_pt
+                if show_gaze and _display_gaze[0] is not None:
+                    pygame.draw.circle(win, gaze_color, _display_gaze[0], gaze_radius, gaze_width)
 
                 pygame.display.flip()
 
@@ -3750,7 +3781,7 @@ def run_vf_test(cfg, sol_context=None):
         if results:
             pass_count = sum(1 for r in results if r['result'] == 'PASS')
             total = len(results)
-            win.fill((0, 0, 0))
+            win.fill(vf_bg)
             summary = font.render(f"VF Test Complete: {pass_count}/{total} PASS", True, (255, 255, 255))
             win.blit(summary, (cx - summary.get_width() // 2, cy - summary.get_height() // 2))
             hint = small_font.render("Press Q to exit", True, (150, 150, 150))

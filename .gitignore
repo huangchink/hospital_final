@@ -20,6 +20,7 @@ data/
 
 # User Calibration Data
 calibration_profiles/
+*sol*offset*.json
 
 # Build Artifacts (PyInstaller)
 build/

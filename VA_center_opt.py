@@ -330,6 +330,24 @@ def screen_width_deg_from_cm(width_cm: float, dist_cm: float) -> float:
         return 0.0
     return 2.0 * math.degrees(math.atan((width_cm / 2.0) / dist_cm))
 
+def px_to_cm(px: float, scr_width_cm: float, scr_width_px: float) -> float:
+    """Convert a pixel length to centimeters using the screen's physical width and resolution."""
+    try:
+        if scr_width_cm <= 0 or scr_width_px <= 0:
+            return 0.0
+        return float(px) * float(scr_width_cm) / float(scr_width_px)
+    except (TypeError, ValueError):
+        return 0.0
+
+def cm_to_px(cm: float, scr_width_cm: float, scr_width_px: float) -> int:
+    """Convert a centimeter length to pixels using the screen's physical width and resolution."""
+    try:
+        if scr_width_cm <= 0 or scr_width_px <= 0:
+            return 0
+        return int(round(float(cm) * float(scr_width_px) / float(scr_width_cm)))
+    except (TypeError, ValueError):
+        return 0
+
 def mean_color_rgb(light, dark):
     l = np.array(light, dtype=np.uint16)
     d = np.array(dark,  dtype=np.uint16)
@@ -436,6 +454,548 @@ class Staircase:
         return (len(self.reversals) >= 4) or \
                (self.freq >= self.maxv and self.max_correct_streak >= 3) or \
                (self.incorrect_streak >= 4)
+
+# ---------- Sol Gaze Quality (missing-data-rate over RECEIVED samples) ----------
+def sol_sample_is_valid(sample):
+    """Return True/False for a Sol GazeData sample's validity, mirroring the recorder's
+    `is_valid` definition (combined.gaze_3d.validity). Returns False when undeterminable
+    so that undecodable samples count as 'missing'."""
+    try:
+        return bool(sample.combined.gaze_3d.validity)
+    except Exception:
+        try:
+            return bool(sample.combined.gaze_2d.validity)
+        except Exception:
+            return False
+
+
+class SolQualityTracker:
+    """Tracks Sol gaze-data completeness over the samples actually RECEIVED from the glasses.
+
+    By design (Sol may drop packets in transmission) the missing-data rate is computed only
+    over received samples: missing% = invalid_received / total_received, where a sample is
+    'valid' iff combined.gaze_3d.validity is True.
+
+    Provides:
+      - a rolling real-time window (default 3s) for the live tester gauge,
+      - an overall (whole-test) rate,
+      - a trial-only rate (samples received while a trial is active; inter-trial excluded).
+    Thread-safe: fed from the test loop, read from the dashboard thread.
+    """
+
+    def __init__(self, window_sec=3.0):
+        self.window_sec = float(window_sec) if window_sec and window_sec > 0 else 3.0
+        self._lock = threading.Lock()
+        self._win = deque()          # (recv_time_s, is_valid_bool)
+        self.total = 0
+        self.invalid = 0
+        self.trial_total = 0
+        self.trial_invalid = 0
+        self._in_trial = False
+
+    def _trim(self, now):
+        cutoff = now - self.window_sec
+        w = self._win
+        while w and w[0][0] < cutoff:
+            w.popleft()
+
+    def add_sample(self, sample, now=None):
+        """Record one received Sol sample. `now` is the PC receive time (seconds)."""
+        valid = sol_sample_is_valid(sample)
+        if now is None:
+            now = time.time()
+        with self._lock:
+            self.total += 1
+            if not valid:
+                self.invalid += 1
+            if self._in_trial:
+                self.trial_total += 1
+                if not valid:
+                    self.trial_invalid += 1
+            self._win.append((now, valid))
+            self._trim(now)
+
+    def set_in_trial(self, flag):
+        with self._lock:
+            self._in_trial = bool(flag)
+
+    def snapshot(self):
+        """Return a dict with realtime/overall/trial missing-rates for display.
+        realtime is None when no samples arrived in the window (=> 'NO SIGNAL')."""
+        now = time.time()
+        with self._lock:
+            self._trim(now)
+            n = len(self._win)
+            realtime = None
+            if n > 0:
+                inv = sum(1 for (_, v) in self._win if not v)
+                realtime = (inv / n * 100.0, n)
+            overall = (self.invalid / self.total * 100.0) if self.total else None
+            trial = (self.trial_invalid / self.trial_total * 100.0) if self.trial_total else None
+            return {
+                'realtime': realtime, 'overall': overall, 'trial': trial,
+                'total': self.total, 'invalid': self.invalid,
+                'trial_total': self.trial_total, 'trial_invalid': self.trial_invalid,
+                'window_sec': self.window_sec,
+            }
+
+
+class DashboardState:
+    """Small thread-safe holder for live trial info shown on the tester dashboard."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._d = {'trial_number': 0, 'cpd': 0.0, 'side': '', 'phase': 'init'}
+
+    def update(self, **kw):
+        with self._lock:
+            self._d.update(kw)
+
+    def get(self):
+        with self._lock:
+            return dict(self._d)
+
+
+# ---------- Webcam Face-Quality Overlay (shared by settings preview + tester dashboard) ----------
+# OpenCV uses BGR colors.
+_Q_GREEN = (0, 200, 0)
+_Q_RED = (0, 0, 255)
+_Q_GRAY = (170, 170, 170)
+_Q_YELLOW = (0, 210, 230)
+_Q_WHITE = (255, 255, 255)
+
+
+def _put_text(img, text, org, color, scale=0.6, thickness=1, center=False):
+    """Draw text with a dark outline for readability. If center=True, org[0] is treated as the
+    horizontal center and the text is centered on it."""
+    x, y = int(org[0]), int(org[1])
+    if center:
+        (tw, _th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, max(1, thickness))
+        x -= tw // 2
+    org = (x, y)
+    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
+
+
+def _rect_int(rect):
+    x, y, w, h = rect
+    return int(x), int(y), int(w), int(h)
+
+
+# Head-guide geometry, defined by the oval's BOTTOM point + height so the bottom stays put when the
+# height changes. Fractions of the (640x480) webcam frame; overridable from the Webcam tab.
+_GUIDE_OVAL_SIZE_FRAC = 0.30       # overall guide SIZE = oval height as a fraction of frame height
+_GUIDE_ASPECT = 0.75               # FIXED oval width/height ratio (face-like); width derives from size
+_GUIDE_OVAL_BOTTOM_X_FRAC = 0.50   # horizontal position of the oval bottom (0=left, 1=right)
+_GUIDE_OVAL_BOTTOM_Y_FRAC = 0.84   # vertical position of the oval bottom (0=top, 1=bottom)
+# Face-fit feedback, judged against the CURRENT guide oval (recomputed each frame from the live
+# Size/position), so matching your face to the oval reads OK and live changes apply immediately.
+_FACE_FIT_RATIO_MIN = 0.65   # face_width / guide_width below this => TOO FAR
+_FACE_FIT_RATIO_MAX = 1.20   # above this => TOO CLOSE
+_FACE_CENTER_MARGIN = 1.30   # face center allowed within this multiple of the guide radii
+# Eye-occlusion detection. MediaPipe keeps reporting eye landmarks even when an eye is covered, so
+# we inspect the eye-box pixels relative to a skin reference (cheeks/nose), making it robust to
+# lighting and skin tone. A visible eye - including one behind glasses - shows either a DARK region
+# (pupil / lashes / frame) OR a BRIGHT region (sclera / lens glare); a covering hand shows neither.
+_EYE_OCCL_DARK_MARGIN = 40.0        # eye pixels this much darker than skin look like pupil/lashes/frame
+_EYE_OCCL_BRIGHT_MARGIN = 45.0      # eye pixels this much brighter than skin look like sclera / lens glare
+_EYE_OCCL_FEATURE_FRAC_MIN = 0.001  # need this fraction of dark-OR-bright "eye-like" pixels, else occluded
+# Eye open/closed via Eye Aspect Ratio (EAR; Soukupova & Cech 2016) on the MediaPipe eye landmarks.
+# EAR is the standard, person/pose-insensitive measure and is robust WITH glasses and across
+# lighting. It reports open/closed reliably from landmarks; it does NOT by itself detect a hand
+# over an open-positioned eye (for that, enable the pixel test below).
+_EAR_CLOSED_THRESH = 0.18          # average eye EAR below this => eye closed (typical open ~0.25-0.35)
+# 6-point EAR landmark indices on the 478-mesh, ordered P1(outer), P2, P3, P4(inner), P5, P6.
+_EAR_IDX_LEFT_RECT = [33, 160, 158, 133, 153, 144]    # eye in face_info.left_rect  (image-left)
+_EAR_IDX_RIGHT_RECT = [362, 385, 387, 263, 373, 380]  # eye in face_info.right_rect (image-right)
+# Optional pixel-based hand/object occlusion test. Fragile with glasses (glare/tint), so OFF by
+# default; set True to also flag a hand covering an open eye (accepting occasional misses).
+_EYE_USE_PIXEL_OCCLUSION = False
+
+
+def _draw_face_guide(img, cx, cy, rx, ry, color, thickness=3):
+    """Draw a head-shaped centering guide (輪廓): an oval head outline with two ears."""
+    cx, cy, rx, ry = int(cx), int(cy), int(rx), int(ry)
+    th = max(1, int(thickness))
+    cv2.ellipse(img, (cx, cy), (rx, ry), 0, 0, 360, color, th, cv2.LINE_AA)
+    ear_rx = max(3, int(rx * 0.22)); ear_ry = max(5, int(ry * 0.16))
+    cv2.ellipse(img, (cx - rx, cy), (ear_rx, ear_ry), 0, 0, 360, color, th, cv2.LINE_AA)
+    cv2.ellipse(img, (cx + rx, cy), (ear_rx, ear_ry), 0, 0, 360, color, th, cv2.LINE_AA)
+
+
+def _skin_reference(frame_bgr, face_rect):
+    """Median brightness of a mid-face (cheeks/nose) patch, used as an adaptive skin reference for
+    eye-occlusion detection (robust to lighting and skin tone). Returns a float or None."""
+    try:
+        fx, fy, fw, fh = _rect_int(face_rect)
+        if fw <= 0 or fh <= 0:
+            return None
+        H, W = frame_bgr.shape[:2]
+        x0 = max(0, fx + int(fw * 0.30)); x1 = min(W, fx + int(fw * 0.70))
+        y0 = max(0, fy + int(fh * 0.55)); y1 = min(H, fy + int(fh * 0.80))
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            return None
+        patch = cv2.cvtColor(frame_bgr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+        return float(np.median(patch))
+    except Exception:
+        return None
+
+
+def eye_region_occluded(frame_bgr, eye_rect, skin_ref=None):
+    """Detect whether an eye box is occluded by a hand/object. MediaPipe infers eye landmarks from
+    the face outline, so they stay 'open' under a hand; we instead inspect the PIXELS. An open eye
+    shows either a dark region (pupil/lashes/frame) or a bright region (sclera/lens glare) relative
+    to facial skin; a covering hand shows neither. Returns True (occluded), False (looks like an
+    eye), or None (cannot tell / box too small)."""
+    try:
+        x, y, w, h = _rect_int(eye_rect)
+        if w < 10 or h < 6:
+            return None
+        H, W = frame_bgr.shape[:2]
+        x = max(0, x); y = max(0, y)
+        w = min(w, W - x); h = min(h, H - y)
+        if w < 10 or h < 6:
+            return None
+        gray = cv2.cvtColor(frame_bgr[y:y + h, x:x + w], cv2.COLOR_BGR2GRAY)
+        gray = cv2.resize(gray, (64, 40), interpolation=cv2.INTER_AREA)
+        if skin_ref and skin_ref > 0:
+            dark_thr = skin_ref - _EYE_OCCL_DARK_MARGIN
+            bright_thr = skin_ref + _EYE_OCCL_BRIGHT_MARGIN
+        else:
+            dark_thr, bright_thr = 70.0, 190.0
+        dark_frac = float(np.mean(gray < dark_thr))      # pupil / lashes / glasses frame
+        bright_frac = float(np.mean(gray > bright_thr))   # sclera / lens glare
+        # A visible eye shows a dark OR a bright region; a covering hand shows neither.
+        looks_like_eye = (dark_frac >= _EYE_OCCL_FEATURE_FRAC_MIN) or (bright_frac >= _EYE_OCCL_FEATURE_FRAC_MIN)
+        return not looks_like_eye
+    except Exception:
+        return None
+
+
+def _ear_from_landmarks(landmarks, idx):
+    """Eye Aspect Ratio from 6 ordered eye landmarks: (|P2-P6| + |P3-P5|) / (2*|P1-P4|).
+    Scale-invariant; ~0.25-0.35 for an open eye, near 0 when closed."""
+    try:
+        p = [np.asarray(landmarks[i][:2], dtype=np.float64) for i in idx]
+        horiz = np.linalg.norm(p[0] - p[3])
+        if horiz <= 1e-3:
+            return None
+        vert = np.linalg.norm(p[1] - p[5]) + np.linalg.norm(p[2] - p[4])
+        return float(vert / (2.0 * horiz))
+    except Exception:
+        return None
+
+
+def eye_aspect_ratios(face_info):
+    """Return (ear_for_left_rect, ear_for_right_rect) from the MediaPipe 478-landmark mesh, or
+    (None, None) if landmarks are unavailable. Low EAR => closed eye. Robust with glasses."""
+    lms = getattr(face_info, 'face_landmarks', None)
+    if lms is None or len(lms) < 468:
+        return None, None
+    return (_ear_from_landmarks(lms, _EAR_IDX_LEFT_RECT),
+            _ear_from_landmarks(lms, _EAR_IDX_RIGHT_RECT))
+
+
+def evaluate_face_centering(face_info, oval_cx, oval_cy, oval_rx, oval_ry):
+    """Decide whether the detected face matches the guide oval. Judged against the CURRENT oval
+    geometry (passed in fresh each frame), so a face that fills the oval reads OK and live Size /
+    position changes apply immediately. Returns (fits, reason)."""
+    if not face_info or not getattr(face_info, 'status', False):
+        return False, "NO FACE"
+    try:
+        fx, fy, fw, fh = _rect_int(face_info.face_rect)
+    except Exception:
+        return False, "NO FACE"
+    if fw <= 0 or fh <= 0:
+        # MediaPipe only fills the rects on a fully-usable detection; a zero box => partial face.
+        return False, "ADJUST FACE"
+    cx, cy = fx + fw / 2.0, fy + fh / 2.0
+    nx = (cx - oval_cx) / max(1.0, _FACE_CENTER_MARGIN * float(oval_rx))
+    ny = (cy - oval_cy) / max(1.0, _FACE_CENTER_MARGIN * float(oval_ry))
+    if nx * nx + ny * ny > 1.0:
+        return False, "OFF-CENTER"
+    ratio = fw / max(1.0, 2.0 * float(oval_rx))   # face width vs guide width; ~1.0 when it fills the oval
+    if ratio < _FACE_FIT_RATIO_MIN:
+        return False, "TOO FAR"
+    if ratio > _FACE_FIT_RATIO_MAX:
+        return False, "TOO CLOSE"
+    return True, "OK"
+
+
+def draw_face_quality_overlay(frame_bgr, face_info, draw_oval=True,
+                              oval_size_frac=_GUIDE_OVAL_SIZE_FRAC,
+                              oval_bottom_x_frac=_GUIDE_OVAL_BOTTOM_X_FRAC,
+                              oval_bottom_y_frac=_GUIDE_OVAL_BOTTOM_Y_FRAC):
+    """Draw green/red face & eye boxes plus a head-shaped centering guide onto frame_bgr (modified
+    in place). The guide keeps a FIXED width:height ratio (oval_size_frac scales the whole oval) and
+    is anchored by its BOTTOM point, so changing the size keeps the bottom fixed. Returns (fits, reason)."""
+    h, w = frame_bgr.shape[:2]
+    oval_ry = max(1, int(h * oval_size_frac / 2.0))
+    oval_rx = max(1, int(_GUIDE_ASPECT * oval_ry))     # width derived from height (fixed face ratio)
+    oval_cx = int(w * oval_bottom_x_frac)
+    oval_cy = int(h * oval_bottom_y_frac - oval_ry)    # center sits half-height above the bottom
+
+    fits, reason = evaluate_face_centering(face_info, oval_cx, oval_cy, oval_rx, oval_ry)
+    guide_color = _Q_GREEN if fits else _Q_RED
+
+    if draw_oval:
+        _draw_face_guide(frame_bgr, oval_cx, oval_cy, oval_rx, oval_ry, guide_color)
+
+    if face_info and getattr(face_info, 'status', False):
+        can_gaze = bool(getattr(face_info, 'can_gaze_estimation', False))
+        try:
+            fx, fy, fw, fh = _rect_int(face_info.face_rect)
+            if fw > 0 and fh > 0:
+                cv2.rectangle(frame_bgr, (fx, fy), (fx + fw, fy + fh), guide_color, 2)
+        except Exception:
+            pass
+        eyes_bad = not can_gaze
+        bad_reason = "EYES BLOCKED"
+        left_ear, right_ear = eye_aspect_ratios(face_info)
+        skin_ref = _skin_reference(frame_bgr, face_info.face_rect) if _EYE_USE_PIXEL_OCCLUSION else None
+        for rect, ear in ((getattr(face_info, 'left_rect', None), left_ear),
+                          (getattr(face_info, 'right_rect', None), right_ear)):
+            if rect is None:
+                continue
+            try:
+                ex, ey, ew, eh = _rect_int(rect)
+                if ew <= 0 or eh <= 0:
+                    continue
+                col = _Q_GREEN
+                if not can_gaze:
+                    col = _Q_RED
+                else:
+                    closed = (ear is not None and ear < _EAR_CLOSED_THRESH)  # EAR: eye open/closed
+                    occ = eye_region_occluded(frame_bgr, rect, skin_ref) if _EYE_USE_PIXEL_OCCLUSION else None
+                    if closed:
+                        col = _Q_RED; eyes_bad = True; bad_reason = "EYES CLOSED"
+                    elif occ is True:
+                        col = _Q_RED; eyes_bad = True; bad_reason = "EYES BLOCKED"
+                cv2.rectangle(frame_bgr, (ex, ey), (ex + ew, ey + eh), col, 2)
+            except Exception:
+                pass
+        if eyes_bad:
+            _put_text(frame_bgr, bad_reason, (oval_cx, oval_cy + oval_ry + 26), _Q_RED, scale=0.6, center=True)
+
+    _put_text(frame_bgr, reason, (oval_cx, max(22, oval_cy - oval_ry - 12)),
+              _Q_GREEN if fits else _Q_RED, scale=0.7, center=True)
+    return fits, reason
+
+
+def guide_kwargs_from_cfg(cfg):
+    """Head-guide geometry overrides (height + bottom X/Y) from a cfg dict, for the tester
+    dashboard. Falls back to the module defaults for any missing/invalid value."""
+    cfg = cfg or {}
+    def _f(key, default):
+        try:
+            return float(cfg.get(key, default))
+        except (TypeError, ValueError):
+            return default
+    return dict(
+        oval_size_frac=_f('webcam_oval_size', _GUIDE_OVAL_SIZE_FRAC),
+        oval_bottom_x_frac=_f('webcam_oval_bottom_x', _GUIDE_OVAL_BOTTOM_X_FRAC),
+        oval_bottom_y_frac=_f('webcam_oval_bottom_y', _GUIDE_OVAL_BOTTOM_Y_FRAC),
+    )
+
+
+def _quality_color(missing_pct):
+    """Green < 20% missing, yellow < 50%, else red."""
+    if missing_pct < 20:
+        return _Q_GREEN
+    if missing_pct < 50:
+        return _Q_YELLOW
+    return _Q_RED
+
+
+class TesterDashboard:
+    """Operator-facing dashboard shown on the tester monitor during a test.
+
+    Left panel: live webcam feed with green/red face & eye boxes and a face-shaped centering
+    guide (so the operator can position the subject for best data quality).
+    Right panel: Sol gaze-quality gauge over the rolling window, overall/trial missing-rate,
+    and current trial info.
+
+    Runs in its own thread; all OpenCV GUI calls are confined to that thread. Any failure is
+    non-fatal - the test continues without the dashboard.
+    """
+
+    WIN_NAME = "Tester Dashboard"
+    PANEL_W = 480
+    CANVAS_H = 540
+
+    def __init__(self, gf, sol_quality, dash_state, cfg, tester_rect=None, fps=15):
+        self.gf = gf
+        self.sol_quality = sol_quality
+        self.dash_state = dash_state
+        self.cfg = cfg or {}
+        self.tester_rect = tester_rect
+        self.fps = max(1, int(fps))
+        self.window_sec = float(self.cfg.get('sol_quality_window', 3.0))
+        self._running = False
+        self._thread = None
+        self._face_aligner = None
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+        self._thread = None
+
+    def _ensure_aligner(self):
+        if self.gf is None or self._face_aligner is not None:
+            return
+        try:
+            if hasattr(mpa, 'MediaPipeFaceAlignment'):
+                self._face_aligner = mpa.MediaPipeFaceAlignment()
+            else:
+                self._face_aligner = mpa()
+        except Exception as e:
+            print(f"[Dashboard] face aligner init failed: {e}")
+            self._face_aligner = None
+
+    def _loop(self):
+        try:
+            cv2.namedWindow(self.WIN_NAME, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(self.WIN_NAME, self.PANEL_W * 2, self.CANVAS_H)
+            if self.tester_rect:
+                tx, ty = int(self.tester_rect[0]), int(self.tester_rect[1])
+                try:
+                    cv2.moveWindow(self.WIN_NAME, tx + 30, ty + 30)
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[Dashboard] window init failed (dashboard disabled): {e}")
+            self._running = False
+            return
+
+        self._ensure_aligner()
+        period = 1.0 / self.fps
+        while self._running:
+            t0 = time.time()
+            try:
+                canvas = self._render()
+                cv2.imshow(self.WIN_NAME, canvas)
+                cv2.waitKey(1)
+            except Exception as e:
+                print(f"[Dashboard] render error: {e}")
+            dt = time.time() - t0
+            if dt < period:
+                time.sleep(period - dt)
+
+        try:
+            cv2.destroyWindow(self.WIN_NAME)
+            cv2.waitKey(1)
+        except Exception:
+            pass
+
+    def _render(self):
+        canvas = np.full((self.CANVAS_H, self.PANEL_W * 2, 3), 30, dtype=np.uint8)
+        self._render_webcam_panel(canvas[:, :self.PANEL_W])
+        self._render_sol_panel(canvas[:, self.PANEL_W:])
+        cv2.line(canvas, (self.PANEL_W, 0), (self.PANEL_W, self.CANVAS_H), (70, 70, 70), 1)
+        return canvas
+
+    def _render_webcam_panel(self, panel):
+        ph, pw = panel.shape[:2]
+        if self.gf is None:
+            _put_text(panel, "Webcam disabled", (20, ph // 2), _Q_GRAY, scale=0.7)
+            return
+        frame_rgb = getattr(getattr(self.gf, 'camera', None), 'last_frame', None)
+        if frame_rgb is None:
+            _put_text(panel, "Waiting for camera...", (20, ph // 2), _Q_GRAY, scale=0.7)
+            return
+        frame_rgb = frame_rgb.copy()
+        face_info = None
+        if self._face_aligner is not None:
+            try:
+                face_info = self._face_aligner.detect(time.time(), frame_rgb)
+            except Exception:
+                face_info = None
+        disp = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        try:
+            draw_face_quality_overlay(disp, face_info, draw_oval=True, **guide_kwargs_from_cfg(self.cfg))
+        except Exception as e:
+            print(f"[Dashboard] overlay error: {e}")
+        disp = cv2.resize(disp, (pw, ph))
+        panel[:, :] = disp
+        _put_text(panel, "WEBCAM", (8, 24), _Q_WHITE, scale=0.6)
+
+    def _render_sol_panel(self, panel):
+        ph, pw = panel.shape[:2]
+        _put_text(panel, "SOL GAZE QUALITY", (16, 32), _Q_WHITE, scale=0.7)
+
+        if self.sol_quality is None:
+            _put_text(panel, "Sol disabled", (16, 84), _Q_GRAY, scale=0.7)
+        else:
+            snap = self.sol_quality.snapshot()
+            rt = snap['realtime']
+            y = 64
+            if rt is None:
+                _put_text(panel, "NO SIGNAL", (16, y + 34), _Q_RED, scale=1.1)
+                _put_text(panel, f"(no samples in last {self.window_sec:.0f}s)",
+                          (16, y + 64), _Q_GRAY, scale=0.5)
+            else:
+                miss, n = rt
+                ok = 100.0 - miss
+                col = _quality_color(miss)
+                _put_text(panel, f"{ok:.0f}% OK", (16, y + 36), col, scale=1.1)
+                bx, by, bw, bh = 16, y + 52, pw - 32, 26
+                cv2.rectangle(panel, (bx, by), (bx + bw, by + bh), (90, 90, 90), 1)
+                fillw = int(bw * min(1.0, miss / 100.0))
+                if fillw > 0:
+                    cv2.rectangle(panel, (bx, by), (bx + fillw, by + bh), col, -1)
+                _put_text(panel, f"missing {miss:.0f}%   (n={n} in {self.window_sec:.0f}s)",
+                          (bx, by + bh + 22), (220, 220, 220), scale=0.5)
+
+            ov, tr = snap['overall'], snap['trial']
+            yy = 210
+            ov_s = ("%.1f%%" % ov) if ov is not None else "N/A"
+            tr_s = ("%.1f%%" % tr) if tr is not None else "N/A"
+            _put_text(panel, f"Whole test : {ov_s} missing", (16, yy), (225, 225, 225), scale=0.6)
+            _put_text(panel, f"Trials only: {tr_s} missing", (16, yy + 30), (225, 225, 225), scale=0.6)
+            _put_text(panel, f"received: {snap['total']}  (trial: {snap['trial_total']})",
+                      (16, yy + 58), _Q_GRAY, scale=0.5)
+
+        # Trial info footer
+        st = self.dash_state.get() if self.dash_state else {}
+        ty = ph - 72
+        cv2.line(panel, (8, ty - 14), (pw - 8, ty - 14), (70, 70, 70), 1)
+        tn = st.get('trial_number', 0)
+        cpd = st.get('cpd', 0.0) or 0.0
+        side = st.get('side', '')
+        phase = st.get('phase', '')
+        _put_text(panel, f"Trial {tn}   cpd={cpd:.2f}   {side}", (16, ty + 8), _Q_WHITE, scale=0.6)
+        _put_text(panel, f"phase: {phase}", (16, ty + 38), (185, 185, 185), scale=0.55)
+
+
+def resolve_tester_rect(cfg):
+    """Resolve the tester monitor rectangle (x,y,w,h) from cfg['sol_offset_tester_screen'].
+    Falls back to the user screen offset slightly if the tester screen is unavailable."""
+    try:
+        monitors = get_monitor_info_windows()
+    except Exception:
+        monitors = []
+    if not monitors:
+        return None
+    idx = 0
+    raw = str(cfg.get('sol_offset_tester_screen', '')).strip()
+    if raw:
+        try:
+            idx = int(raw.split(':')[0].strip())
+        except Exception:
+            idx = 0
+    if idx >= len(monitors) or idx < 0:
+        idx = 0
+    m = monitors[idx]
+    return (m.get('x', 0), m.get('y', 0), m.get('width', 1920), m.get('height', 1080))
+
 
 # ---------- GUI ----------
 # --- Helper Classes for Webcam Preview ---
@@ -647,6 +1207,11 @@ class SettingsWindow(tk.Tk):
         self.sol_pose_smooth_var = tk.StringVar(value="1.0")
         self.sol_gaze_smooth_var = tk.StringVar(value="1.0")
         self.sol_gaze_method_var = tk.StringVar(value="2D")  # "3D" or "2D"
+        self.sol_quality_window_var = tk.StringVar(value="3.0")  # Rolling window (s) for live gaze-quality gauge
+        # Webcam face-guide (oval) geometry, settable on the Webcam tab
+        self.webcam_oval_size_var = tk.StringVar(value="0.30")
+        self.webcam_oval_bottom_x_var = tk.StringVar(value="0.50")
+        self.webcam_oval_bottom_y_var = tk.StringVar(value="0.84")
         self.sol_cal_show_gaze_var = tk.BooleanVar(value=True)  # Show gaze during calibration
 
         # [NEW] Connection State
@@ -812,6 +1377,12 @@ class SettingsWindow(tk.Tk):
         self.after(200, self.update_sol_offset_display)
         self.after(200, self.update_sol_2d_offset_display)
 
+        # Live px->cm readout for VA circle radius (req: cm field)
+        self.rad_var.trace_add("write", self._update_radius_cm_label)
+        self.scr_width_cm_var.trace_add("write", self._update_radius_cm_label)
+        self.sol_offset_user_screen_var.trace_add("write", self._update_radius_cm_label)
+        self.after(250, self._update_radius_cm_label)
+
 
     def recursive_bind_focus(self, widget):
         if isinstance(widget, (tk.Entry, tk.Spinbox, ttk.Entry, ttk.Spinbox)):
@@ -852,6 +1423,19 @@ class SettingsWindow(tk.Tk):
         
         ttk.Button(ctrl, text="Start Preview", command=self.start_preview).pack(side="left", padx=10)
         ttk.Button(ctrl, text="Stop Preview", command=self.stop_preview).pack(side="left", padx=10)
+        ttk.Button(ctrl, text="Verify Gaze (Webcam)", command=self.preview_webcam_gaze).pack(side="left", padx=10)
+
+        # Face-guide (oval) geometry - tune so an at-distance (~60 cm) face fits the guide.
+        # The oval is anchored by its bottom, so changing height keeps the bottom in place.
+        grp_guide = ttk.LabelFrame(frame, text="Face Guide (oval)")
+        grp_guide.pack(fill="x", pady=(6, 0))
+        ttk.Label(grp_guide, text="Size:", font=label_font).pack(side="left", padx=(8, 2))
+        ttk.Spinbox(grp_guide, textvariable=self.webcam_oval_size_var, from_=0.10, to=1.0, increment=0.02, width=6).pack(side="left", padx=2)
+        ttk.Label(grp_guide, text="Bottom X:", font=label_font).pack(side="left", padx=(12, 2))
+        ttk.Spinbox(grp_guide, textvariable=self.webcam_oval_bottom_x_var, from_=0.0, to=1.0, increment=0.02, width=6).pack(side="left", padx=2)
+        ttk.Label(grp_guide, text="Bottom Y:", font=label_font).pack(side="left", padx=(12, 2))
+        ttk.Spinbox(grp_guide, textvariable=self.webcam_oval_bottom_y_var, from_=0.0, to=1.0, increment=0.02, width=6).pack(side="left", padx=2)
+        ttk.Label(grp_guide, text="(fractions of the camera frame)", font=("Arial", 9), foreground="gray").pack(side="left", padx=8)
         
 
 
@@ -925,72 +1509,60 @@ class SettingsWindow(tk.Tk):
 
     def update_preview_loop(self):
         if not self.preview_running: return
-        
-        frame = self.camera_helper.get_frame() if self.camera_helper else None
-        
-        if frame is not None:
-             # Detection
-             # mpa.detect(timestamp, image) -> FaceInfo
-             # It expects image in BGR (step 871 line 70)
-             t = time.time()
-             try:
-                 fi = self.face_aligner.detect(t, frame)
-                 
-                 # Draw if status is True
-                 if fi.status:
-                     # Face Info coordinates are [x, y, w, h] (Step 871 line 203+)
-                     # Draw boxes on *copy* of frame
-                     disp_frame = frame.copy()
-                     
-                     def draw_rect(img, rect, color):
-                         x,y,w,h = rect
-                         x, y, w, h = int(x), int(y), int(w), int(h)
-                         cv2.rectangle(img, (x,y), (x+w, y+h), color, 2)
-                         return img
-                    
-                     disp_frame = draw_rect(disp_frame, fi.face_rect, (0, 255, 0))
-                     disp_frame = draw_rect(disp_frame, fi.left_rect, (255, 0, 0)) # Left Eye (Blue)
-                     disp_frame = draw_rect(disp_frame, fi.right_rect, (0, 0, 255)) # Right Eye (Red)
-                     
-                     # Crops
-                     def get_crop(img, rect):
-                         x,y,w,h = rect
-                         x, y, w, h = int(x), int(y), int(w), int(h)
-                         # Clamp
-                         H,W,_ = img.shape
-                         x,y = max(0,x), max(0,y)
-                         w = min(w, W-x)
-                         h = min(h, H-y)
-                         if w>0 and h>0: return img[y:y+h, x:x+w]
-                         return None
 
-                     l_crop = get_crop(frame, fi.left_rect)
-                     r_crop = get_crop(frame, fi.right_rect)
-                     
-                     # Convert to Tk
-                     self_img = self._cv2_tk(disp_frame, (480, 360)) # Resize for fitting
-                     self.lbl_video.configure(image=self_img)
-                     self.lbl_video.image = self_img
-                     
-                     if l_crop is not None:
-                         l_img = self._cv2_tk(l_crop, (150, 100))
-                         self.lbl_eye_l.configure(image=l_img)
-                         self.lbl_eye_l.image = l_img
-                     
-                     if r_crop is not None:
-                         r_img = self._cv2_tk(r_crop, (150, 100))
-                         self.lbl_eye_r.configure(image=r_img)
-                         self.lbl_eye_r.image = r_img
-                         
-                 else:
-                     # Just frame
-                     img = self._cv2_tk(frame, (480, 360))
-                     self.lbl_video.configure(image=img)
-                     self.lbl_video.image = img
-                     
-             except Exception as e:
-                 print(f"Preview Error: {e}")
-        
+        frame = self.camera_helper.get_frame() if self.camera_helper else None
+
+        if frame is not None:
+            # frame is BGR (raw OpenCV). detect() and the overlay both operate on this.
+            t = time.time()
+            try:
+                fi = None
+                try:
+                    fi = self.face_aligner.detect(t, frame) if self.face_aligner else None
+                except Exception:
+                    fi = None
+
+                # Draw green/red face & eye boxes + fixed face-shaped centering guide.
+                # Drawn every frame (red oval + "NO FACE" when nothing is detected) so the
+                # operator can position the subject inside the guide for best data quality.
+                disp_frame = frame.copy()
+                try:
+                    draw_face_quality_overlay(
+                        disp_frame, fi, draw_oval=True,
+                        oval_size_frac=self.safe_get_float(self.webcam_oval_size_var, _GUIDE_OVAL_SIZE_FRAC),
+                        oval_bottom_x_frac=self.safe_get_float(self.webcam_oval_bottom_x_var, _GUIDE_OVAL_BOTTOM_X_FRAC),
+                        oval_bottom_y_frac=self.safe_get_float(self.webcam_oval_bottom_y_var, _GUIDE_OVAL_BOTTOM_Y_FRAC),
+                    )
+                except Exception as e:
+                    print(f"Preview overlay error: {e}")
+
+                self_img = self._cv2_tk(disp_frame, (480, 360))
+                self.lbl_video.configure(image=self_img)
+                self.lbl_video.image = self_img
+
+                # Eye crop thumbnails (only when a face with eyes is available)
+                def get_crop(img, rect):
+                    x, y, w, h = rect
+                    x, y, w, h = int(x), int(y), int(w), int(h)
+                    H, W, _ = img.shape
+                    x, y = max(0, x), max(0, y)
+                    w = min(w, W - x); h = min(h, H - y)
+                    if w > 0 and h > 0: return img[y:y+h, x:x+w]
+                    return None
+
+                if fi is not None and getattr(fi, 'status', False):
+                    l_crop = get_crop(frame, fi.left_rect)
+                    r_crop = get_crop(frame, fi.right_rect)
+                    if l_crop is not None:
+                        l_img = self._cv2_tk(l_crop, (150, 100))
+                        self.lbl_eye_l.configure(image=l_img); self.lbl_eye_l.image = l_img
+                    if r_crop is not None:
+                        r_img = self._cv2_tk(r_crop, (150, 100))
+                        self.lbl_eye_r.configure(image=r_img); self.lbl_eye_r.image = r_img
+
+            except Exception as e:
+                print(f"Preview Error: {e}")
+
         self.after(30, self.update_preview_loop)
 
     def _cv2_tk(self, img, size):
@@ -1012,6 +1584,39 @@ class SettingsWindow(tk.Tk):
             float(P)
             return True
         except ValueError: return False
+
+    def _get_test_screen_width_px(self):
+        """Pixel width of the currently selected test (user) screen, for px<->cm conversion."""
+        try:
+            monitors = getattr(self, 'preview_monitor_info', None) or get_monitor_info_windows()
+            idx = 0
+            try:
+                idx = int(str(self.sol_offset_user_screen_var.get()).split(':')[0].strip())
+            except Exception:
+                idx = 0
+            if idx < 0 or idx >= len(monitors):
+                idx = 0
+            return monitors[idx].get('width', 0)
+        except Exception:
+            return 0
+
+    def _update_radius_cm_label(self, *args):
+        """Live read-only readout converting the VA circle radius (px) to cm using the
+        test screen's physical width and resolution."""
+        if not hasattr(self, 'lbl_radius_cm'):
+            return
+        try:
+            rad_px = self.safe_get_int(self.rad_var, 0)
+            sw_cm = self.safe_get_float(self.scr_width_cm_var, 0.0)
+            sw_px = self._get_test_screen_width_px()
+            if rad_px <= 0 or sw_cm <= 0 or sw_px <= 0:
+                self.lbl_radius_cm.configure(text="= -- cm")
+                return
+            r_cm = px_to_cm(rad_px, sw_cm, sw_px)
+            d_cm = px_to_cm(rad_px * 2, sw_cm, sw_px)
+            self.lbl_radius_cm.configure(text=f"= {r_cm:.2f} cm radius  (Ø {d_cm:.2f} cm)")
+        except Exception:
+            pass
 
     def build_general_tab(self, parent, l_font, e_font):
         pad = self.ui_pad  # Use dynamic padding
@@ -1058,7 +1663,9 @@ class SettingsWindow(tk.Tk):
         ttk.Spinbox(self.grp_va_stim, textvariable=self.blank_var, from_=0.2, to=10.0, increment=0.1, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
 
         ttk.Label(self.grp_va_stim, text="Circle Radius (px):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
-        ttk.Spinbox(self.grp_va_stim, textvariable=self.rad_var, from_=50, to=800, increment=10, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
+        ttk.Spinbox(self.grp_va_stim, textvariable=self.rad_var, from_=50, to=800, increment=10, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad)
+        self.lbl_radius_cm = ttk.Label(self.grp_va_stim, text="= -- cm", font=l_font, foreground="gray")
+        self.lbl_radius_cm.grid(row=r, column=2, sticky="w", padx=10); r += 1
 
         rot_frame = ttk.Frame(self.grp_va_stim)
         rot_frame.grid(row=r, column=0, columnspan=3, sticky="w", **pad)
@@ -1257,6 +1864,13 @@ class SettingsWindow(tk.Tk):
         ttk.Spinbox(grp_sm, textvariable=self.sol_pose_smooth_var, from_=0.01, to=1.0, increment=0.01, width=8).grid(row=0, column=1, **pad)
         ttk.Label(grp_sm, text="Gaze Smooth Factor:", font=l_font).grid(row=0, column=2, **pad)
         ttk.Spinbox(grp_sm, textvariable=self.sol_gaze_smooth_var, from_=0.01, to=1.0, increment=0.01, width=8).grid(row=0, column=3, **pad)
+
+        # Gaze Quality Monitor (tester dashboard during the test)
+        grp_q = ttk.LabelFrame(parent, text="Gaze Quality Monitor (Tester)"); grp_q.pack(fill="x", padx=10, pady=5)
+        ttk.Label(grp_q, text="Quality Window (s):", font=l_font).grid(row=0, column=0, sticky="w", **pad)
+        ttk.Spinbox(grp_q, textvariable=self.sol_quality_window_var, from_=0.5, to=30.0, increment=0.5, font=e_font, width=8).grid(row=0, column=1, sticky="w", **pad)
+        ttk.Label(grp_q, text="Rolling window for the live missing-data-rate shown on the tester dashboard during the test.",
+                  font=("Arial", 9), foreground="gray").grid(row=1, column=0, columnspan=4, sticky="w", **pad)
 
         # Preview Gaze Mapping
         grp_preview = ttk.LabelFrame(parent, text="Preview Gaze Mapping"); grp_preview.pack(fill="x", padx=10, pady=5)
@@ -2570,6 +3184,141 @@ Controls: SPACE = Record point, Q = Cancel"""
             time.sleep(0.1)
             self.deiconify()
 
+    def preview_webcam_gaze(self):
+        """Verify webcam gaze accuracy. Shows a gray screen with five fixation targets
+        (center / left / right / up / down) plus a live GREEN dot from the calibrated webcam
+        GazeFollower, so the tester can ask the subject to look at each target and confirm the
+        webcam gaze lands on it. Requires an existing webcam calibration profile.
+        Press Q or ESC to exit."""
+        if not self.enable_webcam_var.get():
+            messagebox.showwarning("Webcam disabled", "Enable the Webcam tracker first (General tab).")
+            return
+
+        # Resolve calibration profile (fallback to anonymous_9pt like the test does)
+        calib_dir = self.calib_dir_var.get().strip()
+        calib_path = Path(calib_dir) if calib_dir else None
+        if not calib_path or not calib_path.exists() or not (calib_path / "svr_x.xml").exists():
+            default_profile = Path(__file__).resolve().parent / "calibration_profiles" / "anonymous_9pt"
+            if default_profile.exists() and (default_profile / "svr_x.xml").exists():
+                calib_path = default_profile
+                print(f"[Webcam Preview] Using default calibration profile: {default_profile}")
+            else:
+                messagebox.showerror("Calibration required",
+                                     "No webcam calibration profile found.\nRun webcam calibration first.")
+                return
+
+        # Release the settings camera preview so GazeFollower can open the webcam
+        self.stop_preview()
+
+        # Resolve target screen (the subject's test screen)
+        monitors = get_monitor_info_windows()
+        try:
+            scr_idx = int(str(self.sol_offset_user_screen_var.get()).split(':')[0].strip())
+        except Exception:
+            scr_idx = 0
+        if scr_idx < 0 or scr_idx >= len(monitors):
+            scr_idx = 0
+        scr = monitors[scr_idx]
+        W, H = scr['width'], scr['height']
+        screen_x, screen_y = scr.get('x', 0), scr.get('y', 0)
+
+        gf = None
+        self.withdraw()
+        try:
+            dcfg = DefaultConfig()
+            dcfg.screen_size = np.array([W, H])
+            cid = self.safe_get_int(self.camera_idx_var, 0)
+            webcam = WebCamCamera(webcam_id=cid)
+            calib = SVRCalibration(model_save_path=str(calib_path))
+            gf = GazeFollower(config=dcfg, calibration=calib, camera=webcam)
+            if not gf.calibration.has_calibrated:
+                messagebox.showerror("Calibration required", "The selected profile is not calibrated.")
+                return
+            gf.start_sampling()
+            time.sleep(0.1)
+
+            import os
+            os.environ['SDL_VIDEO_WINDOW_POS'] = f"{screen_x},{screen_y}"
+            pygame.init()
+            win = pygame.display.set_mode((W, H), pygame.NOFRAME)
+            pygame.display.set_caption("Webcam Gaze Verification")
+            ensure_pygame_focus()
+
+            # Five fixation targets: center, left, right, up, down
+            targets = [
+                ("Center", 0.50, 0.50),
+                ("Left",   0.12, 0.50),
+                ("Right",  0.88, 0.50),
+                ("Up",     0.50, 0.12),
+                ("Down",   0.50, 0.88),
+            ]
+            target_px = [(name, int(fx * W), int(fy * H)) for (name, fx, fy) in targets]
+
+            gray_bg = (128, 128, 128)
+            label_font = pygame.font.SysFont(None, 36)
+            info_font = pygame.font.SysFont(None, 28)
+            clock = pygame.time.Clock()
+
+            running = True
+            while running:
+                for ev in pygame.event.get():
+                    if ev.type == pygame.QUIT:
+                        running = False
+                    if ev.type == pygame.KEYDOWN and ev.key in (pygame.K_q, pygame.K_ESCAPE):
+                        running = False
+
+                win.fill(gray_bg)
+                # Draw the five targets as bullseyes
+                for name, tx, ty in target_px:
+                    pygame.draw.circle(win, (255, 255, 255), (tx, ty), 26, 3)
+                    pygame.draw.circle(win, (40, 40, 40), (tx, ty), 12)
+                    pygame.draw.circle(win, (255, 255, 255), (tx, ty), 3)
+                    lbl = info_font.render(name, True, (60, 60, 60))
+                    win.blit(lbl, (tx - lbl.get_width() // 2, ty + 32))
+
+                # Live webcam gaze (green dot)
+                gaze_ok = False
+                try:
+                    gi = gf.get_gaze_info()
+                    if gi and getattr(gi, 'status', False):
+                        coords = getattr(gi, 'filtered_gaze_coordinates', None) or getattr(gi, 'gaze_coordinates', None)
+                        if coords is not None:
+                            gx, gy = int(coords[0]), int(coords[1])
+                            if 0 <= gx < W and 0 <= gy < H:
+                                pygame.draw.circle(win, (0, 255, 0), (gx, gy), 20, 4)
+                                pygame.draw.circle(win, (0, 200, 0), (gx, gy), 8)
+                                gaze_ok = True
+                except Exception:
+                    pass
+
+                s_surf = label_font.render("Gaze: OK" if gaze_ok else "Gaze: --", True,
+                                           (0, 180, 0) if gaze_ok else (200, 60, 60))
+                win.blit(s_surf, (20, 20))
+                hint = info_font.render("Ask the subject to look at each target. Press Q/ESC to exit.",
+                                        True, (40, 40, 40))
+                win.blit(hint, (20, H - 40))
+
+                pygame.display.flip()
+                clock.tick(60)
+
+        except Exception as e:
+            print(f"[Webcam Preview] Error: {e}")
+            traceback.print_exc()
+            messagebox.showerror("Webcam Preview Error", str(e))
+        finally:
+            try:
+                if gf:
+                    gf.stop_sampling()
+                    gf.release()
+            except Exception as e:
+                print(f"[Webcam Preview] Error releasing GazeFollower: {e}")
+            try:
+                pygame.quit()
+            except Exception:
+                pass
+            time.sleep(0.1)
+            self.deiconify()
+
     def build_rec_tab(self, parent, l_font, e_font):
         pad = self.ui_pad  # Use dynamic padding
 
@@ -2819,6 +3568,8 @@ Controls: SPACE = Record point, Q = Cancel"""
             'sol_pose_smooth': self.safe_get_float(self.sol_pose_smooth_var, 0.1),
             'sol_gaze_smooth': self.safe_get_float(self.sol_gaze_smooth_var, 0.15),
             'sol_gaze_method': self.sol_gaze_method_var.get(),  # "3D" or "2D"
+            'sol_quality_window': self.safe_get_float(self.sol_quality_window_var, 3.0),
+            'sol_offset_tester_screen': self.sol_offset_tester_screen_var.get(),
 
             # Recording
             'rec_resolution': self.rec_resolution_var.get(),
@@ -2827,6 +3578,9 @@ Controls: SPACE = Record point, Q = Cancel"""
             'rec_sol_raw_video': self.rec_sol_raw_video_var.get(),
             'camera_id': self.safe_get_int(self.camera_idx_var, 0),
             'show_gaze_marker': self.show_gaze_marker_var.get(),
+            'webcam_oval_size': self.safe_get_float(self.webcam_oval_size_var, 0.30),
+            'webcam_oval_bottom_x': self.safe_get_float(self.webcam_oval_bottom_x_var, 0.50),
+            'webcam_oval_bottom_y': self.safe_get_float(self.webcam_oval_bottom_y_var, 0.84),
 
             # [NEW] Practice mode and Paper color
             'practice_mode': practice_mode,
@@ -2903,6 +3657,10 @@ Controls: SPACE = Record point, Q = Cancel"""
             'sol_offset_user_screen': self.sol_offset_user_screen_var.get(),
             'sol_offset_tester_screen': self.sol_offset_tester_screen_var.get(),
             'sol_preview_screen': self.sol_preview_screen_var.get() if hasattr(self, 'sol_preview_screen_var') else "0",
+            'sol_quality_window': self.sol_quality_window_var.get(),
+            'webcam_oval_size': self.webcam_oval_size_var.get(),
+            'webcam_oval_bottom_x': self.webcam_oval_bottom_x_var.get(),
+            'webcam_oval_bottom_y': self.webcam_oval_bottom_y_var.get(),
 
             # Stimulus settings
             'gaze_color': self.gaze_color_var.get(),
@@ -2984,6 +3742,10 @@ Controls: SPACE = Record point, Q = Cancel"""
             self.sol_offset_target_img_var, self.sol_offset_target_size_var,
             self.sol_offset_num_points_var, self.sol_offset_user_screen_var,
             self.sol_offset_tester_screen_var,
+            self.sol_quality_window_var,
+            self.webcam_oval_size_var,
+            self.webcam_oval_bottom_x_var,
+            self.webcam_oval_bottom_y_var,
             self.rec_resolution_var, self.rec_webcam_var, self.rec_sol_data_var,
             self.rec_sol_raw_video_var,
             self.camera_idx_var, self.show_gaze_marker_var, self.paper_color_var,
@@ -3035,6 +3797,10 @@ Controls: SPACE = Record point, Q = Cancel"""
             if 'sol_offset_tester_screen' in data: self.sol_offset_tester_screen_var.set(data['sol_offset_tester_screen'])
             if 'sol_preview_screen' in data and hasattr(self, 'sol_preview_screen_var'):
                 self.sol_preview_screen_var.set(data['sol_preview_screen'])
+            if 'sol_quality_window' in data: self.sol_quality_window_var.set(str(data['sol_quality_window']))
+            if 'webcam_oval_size' in data: self.webcam_oval_size_var.set(str(data['webcam_oval_size']))
+            if 'webcam_oval_bottom_x' in data: self.webcam_oval_bottom_x_var.set(str(data['webcam_oval_bottom_x']))
+            if 'webcam_oval_bottom_y' in data: self.webcam_oval_bottom_y_var.set(str(data['webcam_oval_bottom_y']))
 
             if 'gaze_color' in data: self.gaze_color_var.set(data['gaze_color'])
             if 'gaze_radius' in data: self.gaze_radius_var.set(str(data['gaze_radius']))
@@ -3270,6 +4036,46 @@ def run_vf_test(cfg, sol_context=None):
     else:
         recorder = Recorder(output_dir="VF_output", subject_id=cfg.get('user_name', 'test'), is_va=False)
 
+    # [NEW] Sol gaze-quality tracker + tester dashboard (mirrors the VA test)
+    sol_quality = SolQualityTracker(window_sec=cfg.get('sol_quality_window', 3.0)) if cfg.get('enable_sol') else None
+    dash_state = DashboardState()
+    dashboard = None
+    try:
+        if cfg.get('enable_webcam') or cfg.get('enable_sol'):
+            tester_rect = resolve_tester_rect(cfg)
+            dashboard = TesterDashboard(gf, sol_quality, dash_state, cfg, tester_rect=tester_rect)
+            dashboard.start()
+            print(f"[VF Dashboard] Tester dashboard started (tester rect: {tester_rect})")
+    except Exception as e:
+        print(f"[VF Dashboard] Failed to start tester dashboard: {e}")
+        dashboard = None
+
+    def finalize_sol_quality_metrics():
+        """Persist whole-test & trial-only Sol missing-data rates to JSON. Returns (overall, trial)."""
+        if sol_quality is None:
+            return None, None
+        snap = sol_quality.snapshot()
+        ov, tr = snap['overall'], snap['trial']
+        try:
+            sess_dir = getattr(recorder, 'session_dir', None)
+            if sess_dir:
+                metrics = {
+                    'missing_data_rate_definition': 'invalid_received / total_received (combined.gaze_3d.validity)',
+                    'whole_test_missing_pct': ov,
+                    'whole_test_received_samples': snap['total'],
+                    'whole_test_invalid_samples': snap['invalid'],
+                    'trial_only_missing_pct': tr,
+                    'trial_only_received_samples': snap['trial_total'],
+                    'trial_only_invalid_samples': snap['trial_invalid'],
+                    'realtime_window_sec': snap['window_sec'],
+                }
+                with open(os.path.join(sess_dir, 'sol_quality_metrics.json'), 'w', encoding='utf-8') as f:
+                    json.dump(metrics, f, ensure_ascii=False, indent=2)
+                print(f"[VF Sol Quality] Saved metrics to {os.path.join(sess_dir, 'sol_quality_metrics.json')}")
+        except Exception as e:
+            print(f"[VF Sol Quality] Failed to save metrics: {e}")
+        return ov, tr
+
     # 4. Load VF stimulus image
     font = pygame.font.SysFont(None, 72)
     small_font = pygame.font.SysFont(None, 24)
@@ -3409,6 +4215,8 @@ def run_vf_test(cfg, sol_context=None):
                 for _ in range(20):
                     try:
                         latest_gaze = sol_gaze_queue.get_nowait()
+                        if sol_quality is not None:
+                            sol_quality.add_sample(latest_gaze)  # count every received Sol sample
                     except queue.Empty:
                         break
 
@@ -3606,6 +4414,9 @@ def run_vf_test(cfg, sol_context=None):
             dwell_start = None
             passed = False
             t0 = time.time()
+            if sol_quality is not None:
+                sol_quality.set_in_trial(True)  # this point's samples count toward the trial-only metric
+            dash_state.update(trial_number=idx + 1, cpd=0.0, side='VF', phase='stimulus')
             last_t = t0
             orig_stim_copy = stim_img.copy()
             angle = 0
@@ -3704,6 +4515,9 @@ def run_vf_test(cfg, sol_context=None):
                 )
                 clock.tick(60)
 
+            if sol_quality is not None:
+                sol_quality.set_in_trial(False)  # feedback/inter-trial excluded from trial-only metric
+            dash_state.update(phase='inter-trial')
             results.append({"stim_index": idx + 1, "result": "PASS" if passed else "FAIL"})
 
             # Feedback (with recording, matching VA test)
@@ -3784,6 +4598,13 @@ def run_vf_test(cfg, sol_context=None):
             win.fill(vf_bg)
             summary = font.render(f"VF Test Complete: {pass_count}/{total} PASS", True, (255, 255, 255))
             win.blit(summary, (cx - summary.get_width() // 2, cy - summary.get_height() // 2))
+            if sol_quality is not None:
+                snap = sol_quality.snapshot()
+                ovs = f"{snap['overall']:.1f}%" if snap['overall'] is not None else "N/A"
+                trs = f"{snap['trial']:.1f}%" if snap['trial'] is not None else "N/A"
+                sol_line = small_font.render(f"Sol missing data - whole test: {ovs}  |  trials only: {trs}",
+                                             True, (255, 220, 120))
+                win.blit(sol_line, (cx - sol_line.get_width() // 2, cy + 10))
             hint = small_font.render("Press Q to exit", True, (150, 150, 150))
             win.blit(hint, (cx - hint.get_width() // 2, cy + 50))
             pygame.display.flip()
@@ -3799,6 +4620,9 @@ def run_vf_test(cfg, sol_context=None):
         print(f"[VF Test] Error: {e}")
         traceback.print_exc()
     finally:
+        if dashboard is not None:
+            dashboard.stop()
+        finalize_sol_quality_metrics()
         if gf:
             gf.stop_sampling()
             gf.release()
@@ -4103,6 +4927,47 @@ def run_test(cfg, sol_context=None):
     else:
         recorder = Recorder(output_dir="VA_output", subject_id=cfg['user_name'], session_num="1", is_va=True)
 
+    # [NEW] Sol gaze-quality tracker (missing-data rate over RECEIVED samples) + tester dashboard
+    sol_quality = SolQualityTracker(window_sec=cfg.get('sol_quality_window', 3.0)) if cfg.get('enable_sol') else None
+    dash_state = DashboardState()
+    dashboard = None
+    try:
+        if cfg.get('enable_webcam') or cfg.get('enable_sol'):
+            tester_rect = resolve_tester_rect(cfg)
+            dashboard = TesterDashboard(gf, sol_quality, dash_state, cfg, tester_rect=tester_rect)
+            dashboard.start()
+            print(f"[Dashboard] Tester dashboard started (tester rect: {tester_rect})")
+    except Exception as e:
+        print(f"[Dashboard] Failed to start tester dashboard: {e}")
+        dashboard = None
+
+    def finalize_sol_quality_metrics():
+        """Persist the two aggregate Sol missing-data rates (whole-test & trial-only) to JSON
+        in the recording session folder. Returns (overall_pct, trial_pct)."""
+        if sol_quality is None:
+            return None, None
+        snap = sol_quality.snapshot()
+        ov, tr = snap['overall'], snap['trial']
+        try:
+            sess_dir = getattr(recorder, 'session_dir', None)
+            if sess_dir:
+                metrics = {
+                    'missing_data_rate_definition': 'invalid_received / total_received (combined.gaze_3d.validity)',
+                    'whole_test_missing_pct': ov,
+                    'whole_test_received_samples': snap['total'],
+                    'whole_test_invalid_samples': snap['invalid'],
+                    'trial_only_missing_pct': tr,
+                    'trial_only_received_samples': snap['trial_total'],
+                    'trial_only_invalid_samples': snap['trial_invalid'],
+                    'realtime_window_sec': snap['window_sec'],
+                }
+                with open(os.path.join(sess_dir, 'sol_quality_metrics.json'), 'w', encoding='utf-8') as f:
+                    json.dump(metrics, f, ensure_ascii=False, indent=2)
+                print(f"[Sol Quality] Saved metrics to {os.path.join(sess_dir, 'sol_quality_metrics.json')}")
+        except Exception as e:
+            print(f"[Sol Quality] Failed to save metrics: {e}")
+        return ov, tr
+
     # [NEW] Paper Color Mode - override colors for paper-like appearance
     PAPER_COLOR_ENABLED = cfg.get('paper_color', False)
     if PAPER_COLOR_ENABLED:
@@ -4263,6 +5128,8 @@ def run_test(cfg, sol_context=None):
                 for _ in range(20):
                     try:
                         latest_gaze = sol_gaze_queue.get_nowait()
+                        if sol_quality is not None:
+                            sol_quality.add_sample(latest_gaze)  # count every received sample (inter-trial)
                     except queue.Empty:
                         break
             if latest_gaze:
@@ -4475,6 +5342,9 @@ def run_test(cfg, sol_context=None):
         start  = time.time()
         passed = False
         hold_start = None
+        if sol_quality is not None:
+            sol_quality.set_in_trial(True)  # count these samples toward the trial-only metric
+        dash_state.update(trial_number=trial_number, cpd=cpd, side=side, phase='stimulus')
 
         # Initialize Sol frame variable to prevent UnboundLocalError when Sol is disabled
         sol_frame_numpy = None
@@ -4494,6 +5364,8 @@ def run_test(cfg, sol_context=None):
                     # Quit test early - cleanup and return to main loop
                     if gf: gf.stop_sampling(); gf.release()
                     if sol_projector: sol_projector.stop_background_detection()
+                    if dashboard is not None: dashboard.stop()
+                    finalize_sol_quality_metrics()
                     recorder.close()
                     pygame.quit()
                     return
@@ -4582,6 +5454,8 @@ def run_test(cfg, sol_context=None):
                             try:
                                 latest_gaze = sol_gaze_queue.get_nowait()
                                 got_new_gaze_data = True
+                                if sol_quality is not None:
+                                    sol_quality.add_sample(latest_gaze)  # count every received sample (trial)
                             except queue.Empty:
                                 break
 
@@ -4804,6 +5678,9 @@ def run_test(cfg, sol_context=None):
 
         # Log trial event with timestamps
         trial_end_ts = time.time()
+        if sol_quality is not None:
+            sol_quality.set_in_trial(False)  # inter-trial samples excluded from trial-only metric
+        dash_state.update(phase='inter-trial')
         stim_cx, stim_cy = centers[side]
         recorder.log_trial_event(
             trial_number=trial_number,
@@ -4914,6 +5791,13 @@ def run_test(cfg, sol_context=None):
             print(f"{key:20s}: {value:6d} ({pct:5.1f}%)")
         print("="*60 + "\n")
 
+    # [NEW] Compute & persist the two Sol gaze-quality missing-data rates
+    sol_overall_missing, sol_trial_missing = finalize_sol_quality_metrics()
+    if sol_quality is not None:
+        ov_s = f"{sol_overall_missing:.1f}%" if sol_overall_missing is not None else "N/A"
+        tr_s = f"{sol_trial_missing:.1f}%" if sol_trial_missing is not None else "N/A"
+        print(f"[Sol Quality] Missing data - whole test: {ov_s} | trials only: {tr_s}")
+
     # Final Result & CSV
     final_cpd = float(stair.freq)
     va_score  = get_va_result_cpd(final_cpd)
@@ -4937,7 +5821,15 @@ def run_test(cfg, sol_context=None):
 
     win.blit(text1, ((W - text1.get_width()) // 2, H // 3 - 50))
     win.blit(text2, ((W - text2.get_width()) // 2, H // 3 + 50))
-    win.blit(text3, ((W - text3.get_width()) // 2, H // 3 + 150))
+    y_extra = H // 3 + 130
+    if sol_quality is not None:
+        ov_s = f"{sol_overall_missing:.1f}%" if sol_overall_missing is not None else "N/A"
+        tr_s = f"{sol_trial_missing:.1f}%" if sol_trial_missing is not None else "N/A"
+        sol_line = info_font.render(f"Sol missing data - whole test: {ov_s}  |  trials only: {tr_s}",
+                                    True, (255, 220, 120))
+        win.blit(sol_line, ((W - sol_line.get_width()) // 2, y_extra))
+        y_extra += 60
+    win.blit(text3, ((W - text3.get_width()) // 2, y_extra + 20))
     pygame.display.flip()
     
     while True:
@@ -4950,6 +5842,7 @@ def run_test(cfg, sol_context=None):
         break
 
     # End - cleanup and return to main loop (keep Sol connection alive for reuse)
+    if dashboard is not None: dashboard.stop()
     if gf: gf.stop_sampling(); gf.release()
     if sol_projector: sol_projector.stop_background_detection()
     recorder.close()

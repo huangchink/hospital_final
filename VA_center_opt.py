@@ -835,7 +835,8 @@ def draw_face_quality_overlay(frame_bgr, face_info, draw_oval=True,
     """Draw green/red face & eye boxes plus a head-shaped centering guide onto frame_bgr (modified
     in place). The guide keeps a FIXED width:height ratio (oval_size_frac scales the whole oval) and
     is anchored by its BOTTOM point, so changing the size keeps the bottom fixed.
-    Returns (fits, reason, left_ok, right_ok) where *_ok report each eye's visibility."""
+    Returns (fits, reason, left_ok, right_ok) where left_ok/right_ok are the SUBJECT's left/right
+    eye visibility (MediaPipe's left_rect is the image-left = subject's right eye, mapped here)."""
     h, w = frame_bgr.shape[:2]
     oval_ry = max(1, int(h * oval_size_frac / 2.0))
     oval_rx = max(1, int(_GUIDE_ASPECT * oval_ry))     # width derived from height (fixed face ratio)
@@ -881,7 +882,9 @@ def draw_face_quality_overlay(frame_bgr, face_info, draw_oval=True,
                 except Exception:
                     ok = False
             ok_flags[key] = ok
-        left_ok, right_ok = ok_flags['L'], ok_flags['R']
+        # MediaPipe's left_rect is the IMAGE-left eye = the SUBJECT's RIGHT eye (non-mirror naming),
+        # so map to subject-relative: "left eye" = subject's left = right_rect, "right" = left_rect.
+        left_ok, right_ok = ok_flags['R'], ok_flags['L']
         if not (left_ok and right_ok):
             _put_text(frame_bgr, bad_reason, (oval_cx, oval_cy + oval_ry + 26), _Q_RED, scale=0.6, center=True)
 
@@ -1736,8 +1739,10 @@ class SettingsWindow(tk.Tk):
                     return None
 
                 if fi is not None and getattr(fi, 'status', False):
-                    l_crop = get_crop(frame, fi.left_rect)
-                    r_crop = get_crop(frame, fi.right_rect)
+                    # "Left Eye" label = subject's LEFT eye = right_rect (image-right, non-mirror);
+                    # "Right Eye" label = subject's RIGHT eye = left_rect (image-left).
+                    l_crop = get_crop(frame, fi.right_rect)
+                    r_crop = get_crop(frame, fi.left_rect)
                     if l_crop is not None:
                         l_img = self._cv2_tk(l_crop, (150, 100))
                         self.lbl_eye_l.configure(image=l_img); self.lbl_eye_l.image = l_img

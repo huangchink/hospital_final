@@ -526,14 +526,15 @@ class SolQualityTracker:
         self.window_sec = float(window_sec) if window_sec and window_sec > 0 else 3.0
         self._lock = threading.Lock()
         self._win = deque()          # (recv_time_s, sol_combined_valid)
+        self._wc_win = deque()       # (recv_time_s, webcam_all_valid) - for trial-start gating
         self._in_trial = False
         self.chan = {k: _ValidityCounter() for k in self.CHANNELS}
 
     def _trim(self, now):
         cutoff = now - self.window_sec
-        w = self._win
-        while w and w[0][0] < cutoff:
-            w.popleft()
+        for w in (self._win, self._wc_win):
+            while w and w[0][0] < cutoff:
+                w.popleft()
 
     def set_in_trial(self, flag):
         with self._lock:
@@ -558,13 +559,29 @@ class SolQualityTracker:
             self._win.append((now, combined))
             self._trim(now)
 
-    def add_webcam(self, face_ok, left_ok, right_ok):
+    def add_webcam(self, face_ok, left_ok, right_ok, now=None):
         """Record one webcam detection frame's quality (from the face-quality overlay)."""
+        all_valid = bool(face_ok) and bool(left_ok) and bool(right_ok)
+        if now is None:
+            now = time.time()
         with self._lock:
             it = self._in_trial
             self.chan['wc_face'].add(bool(face_ok), it)
             self.chan['wc_left'].add(bool(left_ok), it)
             self.chan['wc_right'].add(bool(right_ok), it)
+            self._wc_win.append((now, all_valid))
+            self._trim(now)
+
+    def window_validity(self):
+        """Rolling-window VALIDITY % for trial-start gating: returns (sol_pct, webcam_pct), each
+        None if no samples are in the window. sol = combined gaze validity; webcam = face AND both
+        eyes valid (the same signals shown on the dashboard)."""
+        now = time.time()
+        with self._lock:
+            self._trim(now)
+            sol = (sum(1 for (_, v) in self._win if v) / len(self._win) * 100.0) if self._win else None
+            wc = (sum(1 for (_, v) in self._wc_win if v) / len(self._wc_win) * 100.0) if self._wc_win else None
+            return sol, wc
 
     def snapshot(self):
         """Sol-combined MISSING-rate snapshot for the live gauge + result screen (back-compatible).
@@ -1050,7 +1067,25 @@ class TesterDashboard:
         else:
             self._render_sol_panel(canvas[:, self.PANEL_W:])
         cv2.line(canvas, (self.PANEL_W, 0), (self.PANEL_W, self.CANVAS_H), (70, 70, 70), 1)
+        gate = state.get('gate')
+        if gate:
+            self._render_gate_banner(canvas, gate)
         return canvas
+
+    def _render_gate_banner(self, canvas, gate):
+        """Top banner shown while a trial is waiting for stable valid data (quality gate)."""
+        sol_pct, wc_pct, thr = gate
+        H, Wc = canvas.shape[:2]
+        bar_h = 76
+        canvas[:bar_h, :] = (0, 0, 110)   # dark red bar (BGR)
+        _put_text(canvas, "WAITING FOR STABLE VALID DATA", (Wc // 2, 30), _Q_YELLOW, scale=0.85, center=True)
+        parts = []
+        if sol_pct is not None:
+            parts.append(f"Sol {sol_pct:.0f}%")
+        if wc_pct is not None:
+            parts.append(f"Webcam {wc_pct:.0f}%")
+        msg = ("   ".join(parts) + f"   (need >= {thr:.0f}%)") if parts else f"need >= {thr:.0f}%"
+        _put_text(canvas, msg, (Wc // 2, 60), _Q_WHITE, scale=0.62, center=True)
 
     def _render_webcam_panel(self, panel):
         ph, pw = panel.shape[:2]
@@ -1427,6 +1462,11 @@ class SettingsWindow(tk.Tk):
         
         # [NEW] Gaze Marker Toggle
         self.show_gaze_marker_var = tk.BooleanVar(value=True)
+
+        # [NEW] Gate each trial on data quality: only start once the enabled trackers have
+        # >= threshold valid data in the rolling gaze-quality window.
+        self.require_valid_start_var = tk.BooleanVar(value=False)
+        self.valid_start_threshold_var = tk.StringVar(value="80")
 
         # [NEW] Paper Color Mode - gray bg, black/white grating, white border
         self.paper_color_var = tk.BooleanVar(value=False)
@@ -1838,6 +1878,18 @@ class SettingsWindow(tk.Tk):
         ttk.Combobox(grp_user, textvariable=self.eval_source_var, values=["Webcam", "Sol"], state="readonly", font=e_font).grid(row=r, column=1, sticky="w", **pad); r += 1
 
         ttk.Checkbutton(grp_user, text="Show Gaze Marker during Test", variable=self.show_gaze_marker_var).grid(row=r, column=0, columnspan=2, sticky="w", **pad); r += 1
+
+        # Quality gate: only start a trial once the enabled trackers have >= threshold valid data
+        # in the rolling gaze-quality window (Sol: combined gaze; Webcam: face + both eyes).
+        gate_frame = ttk.Frame(grp_user)
+        gate_frame.grid(row=r, column=0, columnspan=3, sticky="w", **pad); r += 1
+        ttk.Checkbutton(gate_frame, text="Require stable valid data before each trial",
+                        variable=self.require_valid_start_var).pack(side="left")
+        ttk.Label(gate_frame, text="min valid %:", font=l_font).pack(side="left", padx=(12, 2))
+        ttk.Spinbox(gate_frame, textvariable=self.valid_start_threshold_var, from_=0, to=100,
+                    increment=5, width=6).pack(side="left")
+        ttk.Label(gate_frame, text="(enabled trackers, in the gaze-quality window)",
+                  font=("Arial", 9), foreground="gray").pack(side="left", padx=8)
 
         # ── Section 2a: VA Stimulus (shown when VA selected) ──
         self.grp_va_stim = ttk.LabelFrame(parent, text="VA Stimulus")
@@ -3771,6 +3823,8 @@ Controls: SPACE = Record point, Q = Cancel"""
             'webcam_oval_size': self.safe_get_float(self.webcam_oval_size_var, 0.30),
             'webcam_oval_bottom_x': self.safe_get_float(self.webcam_oval_bottom_x_var, 0.50),
             'webcam_oval_bottom_y': self.safe_get_float(self.webcam_oval_bottom_y_var, 0.84),
+            'require_valid_start': self.require_valid_start_var.get(),
+            'valid_start_threshold': self.safe_get_float(self.valid_start_threshold_var, 80.0),
 
             # [NEW] Practice mode and Paper color
             'practice_mode': practice_mode,
@@ -3851,6 +3905,8 @@ Controls: SPACE = Record point, Q = Cancel"""
             'webcam_oval_size': self.webcam_oval_size_var.get(),
             'webcam_oval_bottom_x': self.webcam_oval_bottom_x_var.get(),
             'webcam_oval_bottom_y': self.webcam_oval_bottom_y_var.get(),
+            'require_valid_start': self.require_valid_start_var.get(),
+            'valid_start_threshold': self.valid_start_threshold_var.get(),
 
             # Stimulus settings
             'gaze_color': self.gaze_color_var.get(),
@@ -3936,6 +3992,8 @@ Controls: SPACE = Record point, Q = Cancel"""
             self.webcam_oval_size_var,
             self.webcam_oval_bottom_x_var,
             self.webcam_oval_bottom_y_var,
+            self.require_valid_start_var,
+            self.valid_start_threshold_var,
             self.rec_resolution_var, self.rec_webcam_var, self.rec_sol_data_var,
             self.rec_sol_raw_video_var,
             self.camera_idx_var, self.show_gaze_marker_var, self.paper_color_var,
@@ -3991,6 +4049,8 @@ Controls: SPACE = Record point, Q = Cancel"""
             if 'webcam_oval_size' in data: self.webcam_oval_size_var.set(str(data['webcam_oval_size']))
             if 'webcam_oval_bottom_x' in data: self.webcam_oval_bottom_x_var.set(str(data['webcam_oval_bottom_x']))
             if 'webcam_oval_bottom_y' in data: self.webcam_oval_bottom_y_var.set(str(data['webcam_oval_bottom_y']))
+            if 'require_valid_start' in data: self.require_valid_start_var.set(bool(data['require_valid_start']))
+            if 'valid_start_threshold' in data: self.valid_start_threshold_var.set(str(data['valid_start_threshold']))
 
             if 'gaze_color' in data: self.gaze_color_var.set(data['gaze_color'])
             if 'gaze_radius' in data: self.gaze_radius_var.set(str(data['gaze_radius']))
@@ -4497,6 +4557,63 @@ def run_vf_test(cfg, sol_context=None):
             )
             clock.tick(30)
 
+    def wait_for_stable_quality():
+        """Quality gate (VF): block until each ENABLED tracker has >= threshold valid data in the
+        rolling gaze-quality window. Renders the inter-trial screen + keeps collecting/feeding data,
+        and shows a 'waiting' banner on the tester dashboard. Returns 'quit' if Q is pressed."""
+        if not cfg.get('require_valid_start') or sol_quality is None:
+            return 'ok'
+        need_sol = bool(cfg.get('enable_sol'))
+        need_wc = bool(cfg.get('enable_webcam'))
+        if not (need_sol or need_wc):
+            return 'ok'
+        thr = float(cfg.get('valid_start_threshold', 80.0))
+        while True:
+          try:
+            pygame.event.pump()
+            for ev in pygame.event.get():
+                if ev.type == pygame.KEYDOWN and ev.key == pygame.K_q:
+                    return 'quit'
+            if dashboard is not None:
+                dashboard.pump()
+            win.fill(vf_bg)
+            if inter_surf:
+                win.blit(inter_surf, ((W - inter_surf.get_width()) // 2, (H - inter_surf.get_height()) // 2))
+            else:
+                pygame.draw.line(win, (255, 255, 255), (cx - 40, cy), (cx + 40, cy), 4)
+                pygame.draw.line(win, (255, 255, 255), (cx, cy - 40), (cx, cy + 40), 4)
+            draw_aruco(win)
+            wg_pt, sol_m, sol_r, sol_rd, sol_sf = collect_gaze()
+            disp_pt = wg_pt if cfg.get('eval_source', 'Webcam') == "Webcam" else sol_m
+            if disp_pt:
+                _display_gaze[0] = disp_pt
+            if show_gaze and _display_gaze[0] is not None:
+                pygame.draw.circle(win, gaze_color, _display_gaze[0], gaze_radius, gaze_width)
+            pygame.display.flip()
+            wb_f = get_webcam_frame()
+            rec_screen = cfg.get('rec_webcam') or cfg.get('rec_sol_data')
+            sol_f = sol_sf if cfg.get('rec_sol_raw_video') else None
+            recorder.process_and_record(
+                wb_f, win if rec_screen else None,
+                webcam_gaze=wg_pt,
+                sol_mapped_gaze=sol_m if cfg.get('rec_sol_data') else None,
+                sol_raw_gaze=sol_r if cfg.get('rec_sol_data') else None,
+                sol_raw_gaze_data=sol_rd if cfg.get('rec_sol_data') else None,
+                sol_frame=sol_f)
+            sol_pct, wc_pct = sol_quality.window_validity()
+            dash_state.update(gate=(sol_pct if need_sol else None, wc_pct if need_wc else None, thr))
+            ok = True
+            if need_sol: ok = ok and (sol_pct is not None and sol_pct >= thr)
+            if need_wc: ok = ok and (wc_pct is not None and wc_pct >= thr)
+            if ok:
+                break
+            clock.tick(30)
+          except Exception as e:
+            print(f"[VF wait_for_stable_quality] Error: {e}")
+            clock.tick(30)
+        dash_state.update(gate=None)
+        return 'ok'
+
     # Sol gaze cache
     sol_last_valid_pt = None
     sol_last_gaze_ts = None
@@ -4606,6 +4723,11 @@ def run_vf_test(cfg, sol_context=None):
 
             # Inter-trial
             show_inter(inter_dur)
+
+            # [NEW] Quality gate: wait until enabled trackers have stable valid data (if enabled).
+            if wait_for_stable_quality() == 'quit':
+                quit_requested = True
+                break
 
             target_q = vf_get_quadrant(stim[0], stim[1], cx, cy)
             dwell_start = None
@@ -5514,6 +5636,58 @@ def run_test(cfg, sol_context=None):
           except Exception as e:
             print(f"[show_background_blank] Error: {e}")
 
+    def wait_for_stable_quality():
+        """Quality gate: if enabled, block until each ENABLED tracker has >= threshold valid data
+        in the rolling gaze-quality window. Keeps rendering the blank screen + collecting/feeding
+        data, and shows a 'waiting' banner on the tester dashboard. Returns 'quit' if Q is pressed."""
+        if not cfg.get('require_valid_start') or sol_quality is None:
+            return 'ok'
+        need_sol = bool(cfg.get('enable_sol'))
+        need_wc = bool(cfg.get('enable_webcam'))
+        if not (need_sol or need_wc):
+            return 'ok'
+        thr = float(cfg.get('valid_start_threshold', 80.0))
+        blank_bg = PAPER_GRAY if PAPER_COLOR_ENABLED else to_rgb_tuple(cfg['bg_color'])
+        while True:
+          try:
+            for ev in pygame.event.get():
+                if ev.type == pygame.KEYDOWN and ev.key == pygame.K_q:
+                    return 'quit'
+            win.fill(blank_bg)
+            if cfg['enable_sol']:
+                for mid, pos in aruco_markers_px.items():
+                    if mid in aruco_imgs:
+                        cv_img = aruco_imgs[mid]
+                        if len(cv_img.shape) == 2: cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
+                        else: cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+                        pimg = pygame.image.frombuffer(cv_img.tobytes(), cv_img.shape[1::-1], "RGB")
+                        win.blit(pimg, (pos[0], pos[1]))
+            wg_pt, sol_m, sol_r, sol_rd, sol_sf = process_and_draw_gaze(win)
+            pygame.display.flip()
+            sol_f = sol_sf if cfg.get('rec_sol_raw_video') else None
+            wb_f = get_webcam_frame() if cfg.get('rec_webcam') else None
+            rec_screen = cfg.get('rec_webcam') or cfg.get('rec_sol_data')
+            recorder.process_and_record(
+                wb_f, win if rec_screen else None,
+                webcam_gaze=wg_pt,
+                sol_mapped_gaze=sol_m if cfg.get('rec_sol_data') else None,
+                sol_raw_gaze=sol_r if cfg.get('rec_sol_data') else None,
+                sol_raw_gaze_data=sol_rd if cfg.get('rec_sol_data') else None,
+                sol_frame=sol_f)
+            sol_pct, wc_pct = sol_quality.window_validity()
+            dash_state.update(gate=(sol_pct if need_sol else None, wc_pct if need_wc else None, thr))
+            ok = True
+            if need_sol: ok = ok and (sol_pct is not None and sol_pct >= thr)
+            if need_wc: ok = ok and (wc_pct is not None and wc_pct >= thr)
+            if ok:
+                break
+            clock.tick(30)
+          except Exception as e:
+            print(f"[wait_for_stable_quality] Error: {e}")
+            clock.tick(30)
+        dash_state.update(gate=None)
+        return 'ok'
+
     # Initial delay longer than inter-trial interval to allow homography setup
     show_interval_center(5.0)
 
@@ -5558,6 +5732,16 @@ def run_test(cfg, sol_context=None):
         pa = pygame.surfarray.pixels_alpha(base_surf)
         pa[:] = circle_alpha.T
         del pa
+
+        # [NEW] Quality gate: wait until enabled trackers have stable valid data (if enabled).
+        if wait_for_stable_quality() == 'quit':
+            if gf: gf.stop_sampling(); gf.release()
+            if sol_projector: sol_projector.stop_background_detection()
+            if dashboard is not None: dashboard.stop()
+            finalize_sol_quality_metrics()
+            recorder.close()
+            pygame.quit()
+            return
 
         start  = time.time()
         passed = False

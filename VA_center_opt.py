@@ -991,10 +991,9 @@ class TesterDashboard:
             self._face_aligner = None
 
     def _loop(self):
-        """Worker thread: only BUILD the canvas (numpy + MediaPipe + drawing) and publish it.
-        All OpenCV highgui (window / imshow / waitKey) is done on the MAIN thread via pump(),
-        because highgui is not thread-safe on Windows and crashed under concurrent native load."""
-        self._ensure_aligner()
+        """Worker thread: only BUILD the canvas (numpy + drawing) and publish it. It REUSES
+        GazeFollower's face detection (no own MediaPipe). All OpenCV highgui (window / imshow /
+        waitKey) is done on the MAIN thread via pump() (highgui isn't thread-safe on Windows)."""
         period = 1.0 / self.fps
         while self._running:
             t0 = time.time()
@@ -1055,17 +1054,17 @@ class TesterDashboard:
         if self.gf is None:
             _put_text(panel, "Webcam disabled", (20, ph // 2), _Q_GRAY, scale=0.7)
             return
-        frame_rgb = getattr(getattr(self.gf, 'camera', None), 'last_frame', None)
+        # Reuse GazeFollower's existing detection - do NOT run a second MediaPipe here. A third
+        # concurrent FaceMesh starves the Sol SDK's video-decode thread and crashes it.
+        frame_rgb, face_info = None, None
+        try:
+            frame_rgb, face_info = self.gf.get_latest_frame_face()
+        except Exception:
+            frame_rgb, face_info = None, None
         if frame_rgb is None:
             _put_text(panel, "Waiting for camera...", (20, ph // 2), _Q_GRAY, scale=0.7)
             return
         frame_rgb = frame_rgb.copy()
-        face_info = None
-        if self._face_aligner is not None:
-            try:
-                face_info = self._face_aligner.detect(time.time(), frame_rgb)
-            except Exception:
-                face_info = None
         disp = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
         try:
             fits, reason, l_ok, r_ok = draw_face_quality_overlay(

@@ -81,12 +81,22 @@ class GazeFollower:
                                                                                     self.config.eye_blink_threshold)
 
         self._gaze_info = None
+        # Latest processed frame + face info, so external monitors (e.g. the tester dashboard) can
+        # REUSE this detection instead of running their own MediaPipe instance. A second/third
+        # concurrent FaceMesh starves the Sol SDK's real-time video-decode thread and crashes it.
+        self._latest_frame = None
+        self._latest_face_info = None
 
     def get_gaze_info(self) -> GazeInfo | None:
         """
         Returns the gaze information of the eye-tracking system.
         """
         return self._gaze_info
+
+    def get_latest_frame_face(self):
+        """Return (latest_frame_rgb, latest_face_info) from the most recent processed frame, or
+        (None, None). Lets external monitors reuse detection without a second MediaPipe instance."""
+        return self._latest_frame, self._latest_face_info
 
     def add_subscriber(self, subscriber_fuc, args=(), kwargs=None):
         """
@@ -313,6 +323,9 @@ class GazeFollower:
             elif state == CameraRunningState.SAMPLING:
                 # detect face & gaze
                 face_info = self.face_alignment.detect(timestamp, frame)
+                # publish for external monitors to reuse (no second MediaPipe instance)
+                self._latest_frame = frame
+                self._latest_face_info = face_info
                 gaze_info = self.gaze_estimator.detect(frame, face_info)
         
                 # 只有在真正拿到有效特征并完成滤波后，才更新和 dispatch

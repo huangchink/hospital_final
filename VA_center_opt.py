@@ -3214,6 +3214,27 @@ Controls: SPACE = Record point, Q = Cancel"""
         current_gaze_pt = None
         frame_count = 0
 
+        # [Crash mitigation] The Sol SDK decodes the scene H.264 stream inline on its asyncio
+        # thread; if that thread is starved of the GIL, RTP packets drop and the SDK feeds a
+        # malformed NAL to FFmpeg -> native access-violation crash. Reduce the competing CPU/GIL
+        # load: throttle ArUco detection to ~15Hz (plenty for homography tracking) and pre-compose
+        # the static marker background once instead of re-blitting 22 images on a 4K surface every
+        # frame. Combined with a 30fps loop, this keeps the RTP reader fed.
+        last_pose_submit = 0.0
+        POSE_SUBMIT_INTERVAL = 1.0 / 15.0
+        static_bg = pygame.Surface((screen_w, screen_h))
+        static_bg.fill(TRANSPARENT_COLOR)
+        for _mid, _pos in aruco_markers_px.items():
+            if _mid in aruco_imgs:
+                _cv = aruco_imgs[_mid]
+                if len(_cv.shape) == 2:
+                    _cv = cv2.cvtColor(_cv, cv2.COLOR_GRAY2RGB)
+                elif _cv.shape[2] == 4:
+                    _cv = cv2.cvtColor(_cv, cv2.COLOR_BGRA2RGB)
+                else:
+                    _cv = cv2.cvtColor(_cv, cv2.COLOR_BGR2RGB)
+                static_bg.blit(pygame.image.frombuffer(_cv.tobytes(), _cv.shape[1::-1], "RGB"), (_pos[0], _pos[1]))
+
         print("[Sol Preview] Entering main loop...")
         try:
             while running:
@@ -3266,7 +3287,10 @@ Controls: SPACE = Record point, Q = Cancel"""
                             break
 
                     if latest_frame_numpy is not None:
-                        sol_projector.submit_frame_for_pose(latest_frame_numpy)
+                        now_t = time.time()
+                        if now_t - last_pose_submit >= POSE_SUBMIT_INTERVAL:
+                            sol_projector.submit_frame_for_pose(latest_frame_numpy)
+                            last_pose_submit = now_t
 
                     # Process gaze based on selected method
                     gaze_method = self.sol_gaze_method_var.get()
@@ -3337,21 +3361,10 @@ Controls: SPACE = Record point, Q = Cancel"""
                     if debug_this_frame:
                         print(f"[Sol Preview] Frame {frame_count}, gaze_pt={current_gaze_pt}")
 
-                    # Render - fill with transparent color key
-                    win.fill(TRANSPARENT_COLOR)
-
-                    # Draw ArUco markers
-                    for mid, pos in aruco_markers_px.items():
-                        if mid in aruco_imgs:
-                            cv_img = aruco_imgs[mid]
-                            if len(cv_img.shape) == 2:
-                                cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
-                            elif cv_img.shape[2] == 4:
-                                cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGRA2RGB)
-                            else:
-                                cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-                            py_img = pygame.image.frombuffer(cv_img.tobytes(), cv_img.shape[1::-1], "RGB")
-                            win.blit(py_img, (pos[0], pos[1]))
+                    # Render - blit the pre-composed static marker background (includes the
+                    # transparent color key). Re-blitting all markers on a 4K surface every frame
+                    # was a major main-thread GIL hog that starved the Sol scene RTP reader.
+                    win.blit(static_bg, (0, 0))
 
                     # Draw green dots on detected markers (visualization of detection status)
                     detected_ids = sol_projector.get_detected_marker_ids()
@@ -3390,7 +3403,7 @@ Controls: SPACE = Record point, Q = Cancel"""
                     win.blit(text_surf, (10, screen_h - 40))
 
                     pygame.display.flip()
-                    clock.tick(60)
+                    clock.tick(30)  # 30fps is ample for the preview; frees CPU/GIL for the Sol RTP reader
 
                 except Exception as loop_error:
                     print(f"[Sol Preview] Error in frame {frame_count}: {loop_error}")

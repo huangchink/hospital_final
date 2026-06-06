@@ -14,6 +14,37 @@ except ImportError:
     SDK_AVAILABLE = False
     class AsyncClient: pass
 
+# [Crash fix] Force SINGLE-THREADED scene-video decode.
+#
+# Root cause of the intermittent native "access violation" crashes in
+# ganzin.sol_sdk ...streaming/video_mixin.py:handle_video_packet during sustained
+# scene streaming (gaze preview / 2D calibration): the SDK builds its H.264 decoder
+# via av.CodecContext.create("h264","r"), which defaults to thread_count=0 (auto ->
+# multi-threaded) with thread_type=SLICE. Multithreaded FFmpeg H.264 decoding is a
+# well-known source of intermittent segfaults, and here the decode runs on the SDK's
+# asyncio thread while frames are consumed on other threads. The transport is already
+# TCP (rtspt://, reliable) so this is NOT packet loss. Single-threaded decode is more
+# than fast enough for the 1328x1200 scene camera and removes the crash. The VA/VF test
+# avoided it only by pausing the scene stream after warmup; the preview cannot.
+if SDK_AVAILABLE:
+    try:
+        import av as _av
+        from ganzin.sol_sdk.streaming.video_mixin import VideoMixin as _SolVideoMixin
+
+        def _sol_create_single_threaded_codec(self):
+            codec = _av.CodecContext.create(self._get_video_encoding(), "r")
+            try:
+                codec.thread_count = 1
+                codec.thread_type = "NONE"
+            except Exception as _err:
+                print(f"[SolPatch] Could not set single-threaded decode: {_err}")
+            return codec
+
+        _SolVideoMixin._create_video_codec = _sol_create_single_threaded_codec
+        print("[SolPatch] Scene-video decode forced single-threaded (native-crash mitigation)")
+    except Exception as _patch_err:
+        print(f"[SolPatch] Could not patch scene-video decoder threading: {_patch_err}")
+
 # --- Constants ---
 BORDER_PIXEL_WIDTH = 15
 # Margin from screen edge for ArUco markers
@@ -90,6 +121,23 @@ class ScreenProjector3D:
         self.min_frames_for_init_homography = 10  # Wait at least N frames before accepting initial homography
         self.min_markers_for_init_homography = 8  # Require at least N unique markers for initial homography
         self.homography_from_cache = False  # Track if homography was restored from cache
+
+        # [Self-healing reset] If the stored homography becomes stale/corrupt (e.g. dragged
+        # off by a one-sided, foreshortened marker fit during a head tilt), the old
+        # "reject large changes" path could never recover. We detect staleness in SCREEN
+        # PIXELS -- how badly the stored matrix reprojects the currently-visible markers to
+        # their known screen positions -- which works at any marker count (>=6), unlike a
+        # raw matrix-element delta. Evidence is accumulated with a leaky counter and the
+        # hard reset fires on either a frame-count or a wall-clock bound (so low FPS / frame
+        # drops still recover in bounded time).
+        self._homography_conflict_count = 0
+        self._homography_conflict_start = None  # wall-clock of the first conflicting frame
+        self.homography_stale_px = 200.0     # stored reproj error (screen px) => hard reset
+        self.homography_converge_px = 60.0   # stored reproj error (screen px) => actively blend toward fresh
+        self.homography_fresh_px = 50.0      # fresh reproj error (screen px) => fresh is trustworthy
+        self.homography_reset_frames = 12    # frame-count trigger (fast path at high FPS)
+        self.homography_reset_min_frames = 4  # min frames before the wall-clock trigger may fire
+        self.homography_reset_seconds = 0.6  # wall-clock trigger (bounds recovery at low FPS)
 
         # [2D Gaze Smoothing] Smooth the 2D gaze output to reduce jitter
         self.smoothed_gaze_2d_screen = None
@@ -432,12 +480,24 @@ class ScreenProjector3D:
                           f"inlier_top={inlier_top}, inlier_bottom={inlier_bottom}")
                     H = None  # Mark as invalid
 
+        # [B] Reject globally-skewed homographies before they can touch the stored matrix:
+        # the screen center must map back into (or near) the scene-camera frame. This stops a
+        # one-sided fit during a head tilt from corrupting the stored homography in the first
+        # place (for both fresh init and blended updates).
+        if H is not None:
+            cam_h_px, cam_w_px = image.shape[:2]
+            if not self._homography_center_in_frame(H, screen_width_px, screen_height_px, cam_w_px, cam_h_px):
+                if self.marker_frame_counter % 30 == 0:
+                    print(f"[Homography] REJECTED ({best_method}): screen center maps outside "
+                          f"scene-camera frame (skewed/degenerate)")
+                H = None
+
         if H is not None:
             with self.pose_lock:
-                # Require at least 8 inliers for stability (was 4, too low)
-                if inlier_count >= 8:
-                    if self.image_to_screen_homography is None:
-                        current_frame_count = len(detected_ids_list)
+                now = time.time()
+                if self.image_to_screen_homography is None:
+                    # ---------- INIT: no stored homography yet ----------
+                    if inlier_count >= 8:
                         # For fresh start (no cache), require minimum frames and markers
                         if not self.homography_from_cache:
                             if self.marker_frame_counter < self.min_frames_for_init_homography:
@@ -455,63 +515,91 @@ class ScreenProjector3D:
                             self.image_to_screen_homography = H
                             self.last_homography_marker_count = current_marker_count
                             self.homography_valid = True
-                            self.last_homography_update_time = time.time()
+                            self.last_homography_update_time = now
                             self.homography_from_cache = False  # Now we have a computed homography
-                    else:
-                        # Check how much the homography changed
-                        h_diff = np.abs(H - self.image_to_screen_homography).max()
-
-                        # Since we now use only CURRENT FRAME markers (not buffered),
-                        # large changes likely represent real head movement, not detection errors.
-                        # Use faster smoothing to be responsive to head tilt.
-                        if h_diff > 1000:
-                            # Extreme change - likely detection error, reject
-                            pass
-                        elif h_diff > 200:
-                            # Large change (head movement) - fast update
-                            smooth_factor = 0.5
-                            self.image_to_screen_homography = smooth_factor * H + (1 - smooth_factor) * self.image_to_screen_homography
-                            self.last_homography_update_time = time.time()
-                        elif h_diff > 50:
-                            # Moderate change - moderate smoothing
-                            smooth_factor = 0.3
-                            self.image_to_screen_homography = smooth_factor * H + (1 - smooth_factor) * self.image_to_screen_homography
-                            self.last_homography_update_time = time.time()
-                        else:
-                            # Small change - normal smoothing for stability
-                            self.image_to_screen_homography = self.smoothing_factor * H + (1 - self.smoothing_factor) * self.image_to_screen_homography
-                            self.last_homography_update_time = time.time()
-
-                        self.last_homography_marker_count = current_marker_count
-                        self.homography_valid = True
+                    elif inlier_count >= 6 and self.homography_from_cache:
+                        # Low-inlier init only when falling back from a cached homography
+                        src_center = np.mean(src_pts, axis=0)
+                        test_pt = H @ np.array([src_center[0], src_center[1], 1.0])
+                        if abs(test_pt[2]) > 1e-6:
+                            test_x = test_pt[0] / test_pt[2]
+                            test_y = test_pt[1] / test_pt[2]
+                            if 0 <= test_x < screen_width_px and 0 <= test_y < screen_height_px:
+                                print(f"[Homography DEBUG] INIT (low inliers, from cache): markers={current_marker_count}, inliers={inlier_count}")
+                                self._debug_print_homography(H, src_pts, dst_pts, status, screen_width_px, screen_height_px)
+                                self.image_to_screen_homography = H
+                                self.last_homography_marker_count = current_marker_count
+                                self.homography_valid = True
+                                self.last_homography_update_time = now
+                                self.homography_from_cache = False
                 elif inlier_count >= 6:
-                    # 6-7 inliers: still update but with more smoothing
-                    if self.image_to_screen_homography is not None:
-                        h_diff = np.abs(H - self.image_to_screen_homography).max()
-                        if h_diff < 200:
-                            # Moderate smoothing for fewer inliers
-                            smooth_factor = 0.15
-                            self.image_to_screen_homography = smooth_factor * H + (1 - smooth_factor) * self.image_to_screen_homography
-                            self.last_homography_update_time = time.time()
+                    # ---------- UPDATE: stored homography exists (works for 6+ markers) ----------
+                    # Screen-space staleness: how badly does the STORED matrix map the
+                    # currently-visible markers to their known screen positions, vs how well
+                    # does the FRESH fit? A large stored error with a small fresh error means
+                    # the stored matrix is stale/corrupt (e.g. dragged off during a head tilt).
+                    # This is independent of marker count and of raw matrix-element scale, so
+                    # it heals the half-screen-offset bug even while pinned at 6-7 markers.
+                    stored_err = self._reproj_error_px(self.image_to_screen_homography, src_pts, dst_pts)
+                    fresh_err = self._reproj_error_px(H, src_pts, dst_pts)
+                    is_stale = (stored_err > self.homography_stale_px and
+                                fresh_err < self.homography_fresh_px)
+
+                    if is_stale:
+                        # Accumulate evidence with a leaky counter; a single noisy frame can't
+                        # erase progress. Reset on EITHER a frame-count or a wall-clock bound so
+                        # low FPS / dropped frames still recover in bounded time.
+                        if self._homography_conflict_count == 0:
+                            self._homography_conflict_start = now
+                        self._homography_conflict_count += 1
+                        elapsed = now - (self._homography_conflict_start or now)
+                        if (self._homography_conflict_count >= self.homography_reset_frames or
+                                (self._homography_conflict_count >= self.homography_reset_min_frames and
+                                 elapsed >= self.homography_reset_seconds)):
+                            print(f"[Homography] RESET: stored matrix stale "
+                                  f"(stored_err={stored_err:.0f}px, fresh_err={fresh_err:.0f}px, "
+                                  f"{self._homography_conflict_count} frames / {elapsed:.2f}s) -> replacing with fresh H")
+                            self.image_to_screen_homography = H.copy()
+                            self.last_homography_update_time = now
+                            self._homography_conflict_count = 0
+                            self._homography_conflict_start = None
+                        # While confirming staleness, keep the stored matrix (don't blend toward a
+                        # possibly-spurious fit) until the reset actually fires.
                     else:
-                        # No homography yet - don't accept low-inlier homography for fresh start
-                        # Only accept if we have cached homography and need to fall back
-                        if self.homography_from_cache:
-                            # We have a cache, so we can accept low-inlier updates
-                            src_center = np.mean(src_pts, axis=0)
-                            test_pt = H @ np.array([src_center[0], src_center[1], 1.0])
-                            if abs(test_pt[2]) > 1e-6:
-                                test_x = test_pt[0] / test_pt[2]
-                                test_y = test_pt[1] / test_pt[2]
-                                if 0 <= test_x < screen_width_px and 0 <= test_y < screen_height_px:
-                                    print(f"[Homography DEBUG] INIT (low inliers, from cache): markers={current_marker_count}, inliers={inlier_count}")
-                                    self._debug_print_homography(H, src_pts, dst_pts, status, screen_width_px, screen_height_px)
-                                    self.image_to_screen_homography = H
-                                    self.last_homography_marker_count = current_marker_count
-                                    self.homography_valid = True
-                                    self.last_homography_update_time = time.time()
-                                    self.homography_from_cache = False
-                        # For fresh start, skip low-inlier initial homography - wait for better one
+                        # Not stale enough for a hard reset -> decay evidence (leaky) and track via EMA.
+                        if self._homography_conflict_count > 0:
+                            self._homography_conflict_count -= 1
+                            if self._homography_conflict_count == 0:
+                                self._homography_conflict_start = None
+
+                        h_diff = np.abs(H - self.image_to_screen_homography).max()
+                        if fresh_err < self.homography_fresh_px and stored_err > self.homography_converge_px:
+                            # Stored matrix is measurably off on the current markers (but below the
+                            # hard-reset threshold) and the fresh fit is trustworthy -> actively pull
+                            # toward it, regardless of marker count or raw h_diff. Closes the dead band
+                            # where a moderate (~60-200px) skew at 6-7 markers would otherwise neither
+                            # reset nor blend, leaving gaze offset.
+                            smooth_factor = 0.25
+                        elif inlier_count >= 8:
+                            # Stored matrix is fine on the markers -> EMA for jitter, sized by change.
+                            if h_diff > 1000:
+                                smooth_factor = 0.0   # extreme single-frame jump -> ignore (stored ok on markers)
+                            elif h_diff > 200:
+                                smooth_factor = 0.5   # large change (head movement) - fast update
+                            elif h_diff > 50:
+                                smooth_factor = 0.3   # moderate change
+                            else:
+                                smooth_factor = self.smoothing_factor  # small change - normal smoothing
+                        else:
+                            # 6-7 markers: gentle smoothing; never fully frozen.
+                            smooth_factor = 0.15 if h_diff < 200 else 0.1
+
+                        if smooth_factor > 0.0:
+                            self.image_to_screen_homography = smooth_factor * H + (1 - smooth_factor) * self.image_to_screen_homography
+                            self.last_homography_update_time = now
+
+                    self.last_homography_marker_count = current_marker_count
+                    self.homography_valid = True
 
         # Return current pose state
         return (self.smoothed_rvec, self.smoothed_tvec) if self.is_pose_valid else None, detected_ids_list
@@ -685,6 +773,58 @@ class ScreenProjector3D:
                 print(f"  {name}: cam({cx}, {cy}) -> INVALID (w={dst[2]:.6f})")
         print(f"[Homography DEBUG] ========================")
 
+    @staticmethod
+    def _reproj_error_px(H, src_pts, dst_pts):
+        """Median reprojection error, in SCREEN PIXELS, of an image->screen homography H on
+        the given marker correspondences (src = camera-image centers, dst = known screen
+        centers). Median is robust to a single mis-detected marker. Returns inf if H cannot
+        be applied. This is the staleness signal: a large error for the STORED matrix means
+        it no longer maps what the camera currently sees; a small error for a FRESH fit means
+        that fit is trustworthy. Works for any marker count >= 1."""
+        if H is None or src_pts is None or len(src_pts) == 0:
+            return float('inf')
+        src = np.asarray(src_pts, dtype=np.float64)
+        dst = np.asarray(dst_pts, dtype=np.float64)
+        src_h = np.hstack([src, np.ones((len(src), 1))])  # N x 3
+        proj = (H @ src_h.T).T                            # N x 3
+        w = proj[:, 2]
+        valid = np.abs(w) > 1e-6
+        if not np.any(valid):
+            return float('inf')
+        px = proj[valid, 0] / w[valid]
+        py = proj[valid, 1] / w[valid]
+        err = np.sqrt((px - dst[valid, 0]) ** 2 + (py - dst[valid, 1]) ** 2)
+        return float(np.median(err))
+
+    @staticmethod
+    def _homography_center_in_frame(H, screen_w, screen_h, cam_w, cam_h, margin_frac=0.5):
+        """Sanity-check an image->screen homography by mapping the screen center back into
+        the scene-camera frame via the inverse.
+
+        A globally-skewed fit (e.g. from a one-sided / foreshortened marker set seen during
+        a head tilt) sends the screen center far outside the camera frame even though it may
+        fit the few visible markers. Rejecting those before they are blended into the stored
+        matrix prevents the persistent-offset corruption. The margin is deliberately generous
+        so legitimate head tilts are not rejected -- the self-healing reset ([A]) recovers
+        from anything that still slips through.
+
+        Returns True if the homography looks usable.
+        """
+        if H is None:
+            return False
+        try:
+            H_inv = np.linalg.inv(H)
+        except np.linalg.LinAlgError:
+            return False
+        c = H_inv @ np.array([screen_w / 2.0, screen_h / 2.0, 1.0])
+        if abs(c[2]) < 1e-6:
+            return False
+        cx, cy = c[0] / c[2], c[1] / c[2]
+        if not (np.isfinite(cx) and np.isfinite(cy)):
+            return False
+        mx, my = cam_w * margin_frac, cam_h * margin_frac
+        return (-mx <= cx <= cam_w + mx) and (-my <= cy <= cam_h + my)
+
     def is_homography_valid(self, strict=False):
         """Check if 2D gaze mapping homography is available.
 
@@ -735,6 +875,8 @@ class ScreenProjector3D:
             H: 3x3 numpy array, or None to clear
         """
         with self.pose_lock:
+            self._homography_conflict_count = 0
+            self._homography_conflict_start = None
             if H is not None:
                 self.image_to_screen_homography = H.copy()
                 self.homography_valid = True

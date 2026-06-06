@@ -104,6 +104,7 @@ class PlaybackEngine(QWidget):
         self.webcam_gaze_df = None
         self.sol_gaze_df = None
         self.trial_events_df = None
+        self.webcam_quality_df = None
         self.start_time = 0.0
         self.duration = 0.0
         self.master_clock = 0.0
@@ -131,6 +132,7 @@ class PlaybackEngine(QWidget):
         self.webcam_gaze_df = None
         self.sol_gaze_df = None
         self.trial_events_df = None
+        self.webcam_quality_df = None
         self.master_clock = 0.0
         self.last_valid_sol_gaze = None
         self.last_sol_gaze_time = None
@@ -204,9 +206,72 @@ class PlaybackEngine(QWidget):
             except Exception as e:
                 print(f"Error loading trial_events.csv: {e}")
 
+        # Webcam per-frame quality (face/eye validity) for the timeline + numbers
+        wq_csv = os.path.join(directory, "webcam_quality.csv")
+        if os.path.exists(wq_csv):
+            try:
+                self.webcam_quality_df = pd.read_csv(wq_csv)
+                self.webcam_quality_df['t_norm'] = (
+                    self.webcam_quality_df['pc_timestamp_ms'] / 1000.0 - self.start_time
+                )
+                print(f"Loaded webcam quality: {len(self.webcam_quality_df)} rows")
+            except Exception as e:
+                print(f"Error loading webcam_quality.csv: {e}")
+
         print(f"Session loaded. Duration: {self.duration:.2f}s")
         self.session_loaded.emit()
         return True
+
+    # -- Validity (data quality) -------------------------------------------
+
+    def _validity_arrays(self):
+        """Per-source validity time series: {'sol': (t_norm, valid01), 'webcam': (...)} (None if absent)."""
+        out = {'sol': None, 'webcam': None}
+        try:
+            df = self.sol_gaze_df
+            if df is not None and len(df) and 'is_valid' in df.columns:
+                t = df['t_norm'].to_numpy(dtype=float)
+                v = (df['is_valid'].to_numpy() == 1).astype(float)
+                out['sol'] = (t, v)
+        except Exception as e:
+            print(f"[validity] sol series error: {e}")
+        try:
+            df = self.webcam_quality_df
+            if df is not None and len(df) and {'face_ok', 'left_eye_ok', 'right_eye_ok'}.issubset(df.columns):
+                t = df['t_norm'].to_numpy(dtype=float)
+                v = ((df['face_ok'] == 1) & (df['left_eye_ok'] == 1) & (df['right_eye_ok'] == 1)).to_numpy().astype(float)
+                out['webcam'] = (t, v)
+        except Exception as e:
+            print(f"[validity] webcam series error: {e}")
+        return out
+
+    def validity_summary(self):
+        """Overall and trial-only validity % per source: {'sol': {'overall','trial','n'}, ...}."""
+        arrs = self._validity_arrays()
+        windows = []
+        if self.trial_events_df is not None:
+            try:
+                for _, r in self.trial_events_df.iterrows():
+                    windows.append((float(r['start_norm']), float(r['end_norm'])))
+            except Exception:
+                pass
+        summary = {}
+        for key, ar in arrs.items():
+            if ar is None:
+                continue
+            t, v = ar
+            if len(v) == 0:
+                continue
+            overall = float(v.mean() * 100.0)
+            trial = None
+            if windows:
+                mask = np.zeros(len(t), dtype=bool)
+                for (a, b) in windows:
+                    mask |= (t >= a) & (t <= b)
+                if mask.any():
+                    trial = float(v[mask].mean() * 100.0)
+            summary[key] = {'overall': overall, 'trial': trial, 'n': int(len(v))}
+        return summary
 
     # -- Gaze data lookup ---------------------------------------------------
 
@@ -431,7 +496,7 @@ class TimelineWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(50)
+        self.setFixedHeight(84)
         self.setMouseTracking(True)
 
         self._duration = 0.0
@@ -439,6 +504,9 @@ class TimelineWidget(QWidget):
         self._trials = []  # list of (start_norm, end_norm, result_str, trial_num, cpd)
         self._hover_trial = None
         self._scrubbing = False
+        self._strip_N = 360
+        self._sol_band = None   # np int array (0=no data, 1=green, 2=amber, 3=red) or None
+        self._wc_band = None
 
     def set_duration(self, d: float):
         self._duration = d
@@ -451,6 +519,62 @@ class TimelineWidget(QWidget):
     def set_trials(self, trials: list):
         self._trials = trials
         self.update()
+
+    def set_validity(self, sol, webcam):
+        """sol/webcam: (t_norm_array, valid01_array) or None. Builds per-bucket validity bands."""
+        self._sol_band = self._bucketize(sol)
+        self._wc_band = self._bucketize(webcam)
+        self.update()
+
+    def _bucketize(self, arr):
+        """Down-sample a validity time series to self._strip_N bands (0=no data,1=green,2=amber,3=red)."""
+        if arr is None or self._duration <= 0:
+            return None
+        t, v = arr
+        t = np.asarray(t, dtype=float)
+        v = np.asarray(v, dtype=float)
+        if len(t) == 0:
+            return None
+        N = self._strip_N
+        idx = np.clip((t / self._duration * N).astype(int), 0, N - 1)
+        counts = np.bincount(idx, minlength=N).astype(float)
+        sums = np.bincount(idx, weights=v, minlength=N).astype(float)
+        band = np.zeros(N, dtype=int)  # 0 = no data (gray)
+        nz = counts > 0
+        frac = np.zeros(N)
+        frac[nz] = sums[nz] / counts[nz]
+        band[nz & (frac >= 0.8)] = 1
+        band[nz & (frac >= 0.5) & (frac < 0.8)] = 2
+        band[nz & (frac < 0.5)] = 3
+        return band
+
+    @staticmethod
+    def _band_color(b):
+        return {0: QColor(55, 55, 55), 1: QColor(76, 175, 80),
+                2: QColor(255, 193, 7), 3: QColor(244, 67, 54)}[int(b)]
+
+    def _draw_strip(self, p, band, y, sh, margin, usable, label):
+        p.setPen(Qt.PenStyle.NoPen)
+        if band is None:
+            p.setBrush(QColor(48, 48, 48))
+            p.drawRect(margin, y, usable, sh)
+        else:
+            N = len(band)
+            i = 0
+            while i < N:
+                b = band[i]
+                j = i + 1
+                while j < N and band[j] == b:
+                    j += 1
+                x1 = margin + int(i / N * usable)
+                x2 = margin + int(j / N * usable)
+                p.setBrush(self._band_color(b))
+                p.drawRect(x1, y, max(1, x2 - x1), sh)
+                i = j
+        # Source label (left edge, over the strip)
+        p.setPen(QColor(235, 235, 235))
+        p.setFont(QFont("Consolas", 7, QFont.Weight.Bold))
+        p.drawText(margin + 3, y + sh - 2, label)
 
     # -- Coordinate helpers -------------------------------------------------
 
@@ -477,8 +601,8 @@ class TimelineWidget(QWidget):
         # Background
         p.fillRect(0, 0, w, h, QColor(40, 40, 40))
 
-        bar_y = 18
-        bar_h = 18
+        bar_y = 16
+        bar_h = 13
         margin = 8
         usable = w - 2 * margin
 
@@ -496,6 +620,11 @@ class TimelineWidget(QWidget):
             p.setBrush(color)
             p.drawRoundedRect(x1, bar_y, tw, bar_h, 2, 2)
 
+        # Validity strips (Sol + Webcam), below the trial bar
+        strip_y0 = bar_y + bar_h + 3
+        self._draw_strip(p, self._sol_band, strip_y0, 10, margin, usable, "SOL")
+        self._draw_strip(p, self._wc_band, strip_y0 + 12, 10, margin, usable, "CAM")
+
         # Progress fill
         if self._duration > 0:
             px = self._time_to_x(self._current_time)
@@ -508,6 +637,10 @@ class TimelineWidget(QWidget):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(255, 255, 255))
             p.drawEllipse(QPoint(px, bar_y + bar_h // 2), 6, 6)
+
+            # Playhead line through the validity strips (alignment)
+            p.setPen(QPen(QColor(255, 255, 255, 170), 1))
+            p.drawLine(px, bar_y, px, bar_y + bar_h + 3 + 22)
 
         # Time text
         p.setPen(QColor(200, 200, 200))
@@ -669,6 +802,16 @@ class ConfigPanel(QWidget):
             ol.addWidget(chk)
         layout.addWidget(grp_overlay)
 
+        # Data quality (validity %) summary
+        grp_qual = QGroupBox("Data Quality (valid %)")
+        ql = QVBoxLayout(grp_qual)
+        self.qual_label = QLabel("No session loaded")
+        self.qual_label.setWordWrap(True)
+        self.qual_label.setTextFormat(Qt.TextFormat.RichText)
+        self.qual_label.setStyleSheet("font-size: 11px;")
+        ql.addWidget(self.qual_label)
+        layout.addWidget(grp_qual)
+
         # Trial list
         grp_trials = QGroupBox("Trials")
         tl = QVBoxLayout(grp_trials)
@@ -698,6 +841,41 @@ class ConfigPanel(QWidget):
             item.setForeground(QColor(color))
             item.setData(Qt.ItemDataRole.UserRole, float(row['start_norm']))
             self.trial_list.addItem(item)
+
+    def set_validity_summary(self, summary):
+        """summary: {'sol': {'overall','trial','n'}, 'webcam': {...}} (from PlaybackEngine.validity_summary)."""
+        if not summary:
+            self.qual_label.setText(
+                "<span style='color:#888'>No validity data<br>"
+                "(no Sol / webcam_quality.csv)</span>")
+            return
+
+        def band_color(p):
+            if p is None:
+                return "#888"
+            if p >= 80:
+                return "#4CAF50"
+            if p >= 50:
+                return "#FFC107"
+            return "#F44336"
+
+        def fmt(p):
+            return f"{p:.0f}%" if p is not None else "N/A"
+
+        rows = []
+        for key, label in (('sol', 'Sol (combined gaze)'),
+                           ('webcam', 'Webcam (face + eyes)')):
+            s = summary.get(key)
+            if not s:
+                continue
+            ov, tr = s.get('overall'), s.get('trial')
+            rows.append(
+                f"<b>{label}</b><br>"
+                f"&nbsp;whole: <span style='color:{band_color(ov)}'><b>{fmt(ov)}</b></span>"
+                f"&nbsp;&nbsp;trials: <span style='color:{band_color(tr)}'><b>{fmt(tr)}</b></span>"
+            )
+        self.qual_label.setText("<br>".join(rows) if rows else
+                                "<span style='color:#888'>No validity data</span>")
 
     def _on_trial_clicked(self, item: QListWidgetItem):
         t = item.data(Qt.ItemDataRole.UserRole)
@@ -858,6 +1036,14 @@ class ReplayerApp(QMainWindow):
                 ))
             self.timeline.set_trials(trials)
             self.config_panel.populate_trials(self.engine.trial_events_df)
+
+        # Validity strips on the timeline + summary numbers in the side panel
+        try:
+            varrs = self.engine._validity_arrays()
+            self.timeline.set_validity(varrs.get('sol'), varrs.get('webcam'))
+            self.config_panel.set_validity_summary(self.engine.validity_summary())
+        except Exception as e:
+            print(f"[Replayer] validity setup error: {e}")
 
         # Force a frame update at t=0
         self.engine.time_changed.emit(0.0)

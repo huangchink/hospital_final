@@ -10,12 +10,18 @@ import queue
 import copy
 
 class Recorder:
-    def __init__(self, output_dir="VA_output", subject_id="test", session_num="1", is_va=True):
+    def __init__(self, output_dir="VA_output", subject_id="test", session_num="1", is_va=True,
+                 screen_max_height=1080):
         """
         is_va: True for VA test (saves to VA_output), False for VF (saves to VF_output) or custom.
         output_dir: Base directory for output.
+        screen_max_height: cap the screen recording's height (downscale larger screens - 2K/4K - to
+            this many lines, preserving aspect ratio). 0/None keeps native. Default 1080p. The 4K
+            encode was the bottleneck that overflowed the queue and dropped screen frames.
         """
         self.output_dir = output_dir
+        self.screen_max_height = int(screen_max_height) if screen_max_height else 0
+        self._screen_drops = 0
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
@@ -158,7 +164,7 @@ class Recorder:
                  buf = pygame.image.tostring(screen_surface, 'RGB')
                  self.queue_screen.put_nowait((buf, w, h, f_idx, timestamp))
              except queue.Full:
-                 print("Warning: Screen Queue Full (Dropping Frame)")
+                 self._screen_drops += 1   # summarized once at close() instead of per-frame spam
 
         # 3. Sol Frame
         if sol_frame is not None:
@@ -228,10 +234,22 @@ class Recorder:
         if writer: writer.release()
         if ts_file: ts_file.close()
 
+    def _screen_output_size(self, w, h):
+        """Target screen-recording size: downscale to fit screen_max_height (preserve aspect ratio,
+        even dimensions); never upscale. Returns (out_w, out_h)."""
+        cap = self.screen_max_height
+        if not cap or h <= cap:
+            return int(w), int(h)
+        scale = cap / float(h)
+        out_w = int(round(w * scale)) & ~1   # force even (mp4 codecs prefer even dims)
+        out_h = int(cap) & ~1
+        return max(2, out_w), max(2, out_h)
+
     # --- Worker: Screen ---
     def _worker_screen(self):
         writer = None
         ts_file, ts_writer = None, None
+        out_w = out_h = None
 
         while True:
             try:
@@ -245,15 +263,22 @@ class Recorder:
             buf, w, h, f_idx, ts = item
 
             if writer is None:
+                out_w, out_h = self._screen_output_size(w, h)
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 writer = cv2.VideoWriter(
                     os.path.join(self.session_dir, "screen_record.mp4"),
-                    fourcc, 30.0, (w, h)
+                    fourcc, 30.0, (out_w, out_h)
                 )
                 ts_file, ts_writer = self._init_timestamp_writer("screen_video_timestamp.csv")
+                if (out_w, out_h) != (w, h):
+                    print(f"[Recorder] Screen recording downscaled {w}x{h} -> {out_w}x{out_h}")
 
             # [OPT] Convert buffer to numpy array in worker thread
             frame_rgb = np.frombuffer(buf, dtype=np.uint8).reshape((h, w, 3))
+            # Downscale large screens (2K/4K) before encoding - the native 4K encode was too slow
+            # and overflowed the queue. Done in the worker so the 60 fps stimulus loop isn't taxed.
+            if (out_w, out_h) != (w, h):
+                frame_rgb = cv2.resize(frame_rgb, (out_w, out_h), interpolation=cv2.INTER_AREA)
             frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
             writer.write(frame_bgr)
             ts_writer.writerow([f_idx, ts])
@@ -463,6 +488,9 @@ class Recorder:
             if t.is_alive():
                 print(f"Waiting for {name} Recorder to finish...")
                 t.join(timeout=timeout)
+
+        if self._screen_drops:
+            print(f"[Recorder] Screen frames dropped (encoder backlog): {self._screen_drops}")
 
         if self.webcam_csv_file:
             try: self.webcam_csv_file.close()

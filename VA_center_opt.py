@@ -4220,7 +4220,8 @@ def run_vf_test(cfg, sol_context=None):
     if cfg.get('practice_mode', False):
         recorder = DummyRecorder()
     else:
-        recorder = Recorder(output_dir="VF_output", subject_id=cfg.get('user_name', 'test'), is_va=False)
+        recorder = Recorder(output_dir="VF_output", subject_id=cfg.get('user_name', 'test'), is_va=False,
+                            screen_max_height=(720 if cfg.get('rec_resolution') == "1280x720" else 1080))
 
     # [NEW] Sol gaze-quality tracker + tester dashboard (mirrors the VA test)
     sol_quality = (SolQualityTracker(window_sec=cfg.get('sol_quality_window', 3.0))
@@ -5133,7 +5134,8 @@ def run_test(cfg, sol_context=None):
         print("[Practice Mode] Using DummyRecorder - no data will be saved")
         recorder = DummyRecorder()
     else:
-        recorder = Recorder(output_dir="VA_output", subject_id=cfg['user_name'], session_num="1", is_va=True)
+        recorder = Recorder(output_dir="VA_output", subject_id=cfg['user_name'], session_num="1", is_va=True,
+                            screen_max_height=(720 if cfg.get('rec_resolution') == "1280x720" else 1080))
 
     # [NEW] Sol gaze-quality tracker (missing-data rate over RECEIVED samples) + tester dashboard
     sol_quality = (SolQualityTracker(window_sec=cfg.get('sol_quality_window', 3.0))

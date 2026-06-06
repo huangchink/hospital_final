@@ -964,7 +964,11 @@ class SolConnector:
         self.scene_queue = scene_queue
         self.stop_event = threading.Event()
         self._scene_active = threading.Event()  # Controls scene stream on/off
-        self._scene_active.set()  # Active by default
+        # Start PAUSED: the scene (H.264) video is only needed for ArUco during preview/calibration/
+        # tests, which each call resume_scene_stream() explicitly. Decoding it while idle in the
+        # settings window wastes CPU and exposes the SDK's native FFmpeg decoder to crashes
+        # (Windows access violation in handle_video_packet) under concurrent load.
+        self._scene_active.clear()  # Paused until a consumer resumes it
         self._worker_thread = None  # Set after thread creation for join on stop
 
     def pause_scene_stream(self):

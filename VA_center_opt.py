@@ -944,6 +944,10 @@ class TesterDashboard:
         self._face_aligner = None
         self._wq_file = None
         self._wq_writer = None
+        self._latest = None              # latest rendered canvas (built on worker thread)
+        self._canvas_lock = threading.Lock()
+        self._window_created = False     # cv2 window is created/destroyed on the MAIN thread
+        self._last_pump = 0.0
 
     def start(self):
         if self._running:
@@ -957,6 +961,13 @@ class TesterDashboard:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
         self._thread = None
+        if self._window_created:        # destroy on the MAIN thread (where it was created)
+            try:
+                cv2.destroyWindow(self.WIN_NAME)
+                cv2.waitKey(1)
+            except Exception:
+                pass
+            self._window_created = False
         if self._wq_file is not None:
             try:
                 self._wq_file.close()
@@ -978,39 +989,50 @@ class TesterDashboard:
             self._face_aligner = None
 
     def _loop(self):
-        try:
-            cv2.namedWindow(self.WIN_NAME, cv2.WINDOW_NORMAL)
-            cv2.resizeWindow(self.WIN_NAME, self.PANEL_W * 2, self.CANVAS_H)
-            if self.tester_rect:
-                tx, ty = int(self.tester_rect[0]), int(self.tester_rect[1])
-                try:
-                    cv2.moveWindow(self.WIN_NAME, tx + 30, ty + 30)
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"[Dashboard] window init failed (dashboard disabled): {e}")
-            self._running = False
-            return
-
+        """Worker thread: only BUILD the canvas (numpy + MediaPipe + drawing) and publish it.
+        All OpenCV highgui (window / imshow / waitKey) is done on the MAIN thread via pump(),
+        because highgui is not thread-safe on Windows and crashed under concurrent native load."""
         self._ensure_aligner()
         period = 1.0 / self.fps
         while self._running:
             t0 = time.time()
             try:
                 canvas = self._render()
-                cv2.imshow(self.WIN_NAME, canvas)
-                cv2.waitKey(1)
+                with self._canvas_lock:
+                    self._latest = canvas
             except Exception as e:
                 print(f"[Dashboard] render error: {e}")
             dt = time.time() - t0
             if dt < period:
                 time.sleep(period - dt)
 
+    def pump(self):
+        """Call from the MAIN thread to display the latest canvas. Cheap: one imshow + waitKey.
+        Safe no-op until the worker has produced a frame. Throttled to ~25 Hz so calling it from
+        the 60 fps stimulus loop adds negligible overhead."""
+        now = time.time()
+        if now - self._last_pump < 0.04:
+            return
+        with self._canvas_lock:
+            canvas = self._latest
+        if canvas is None:
+            return
+        self._last_pump = now
         try:
-            cv2.destroyWindow(self.WIN_NAME)
+            if not self._window_created:
+                cv2.namedWindow(self.WIN_NAME, cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(self.WIN_NAME, self.PANEL_W * 2, self.CANVAS_H)
+                if self.tester_rect:
+                    tx, ty = int(self.tester_rect[0]), int(self.tester_rect[1])
+                    try:
+                        cv2.moveWindow(self.WIN_NAME, tx + 30, ty + 30)
+                    except Exception:
+                        pass
+                self._window_created = True
+            cv2.imshow(self.WIN_NAME, canvas)
             cv2.waitKey(1)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Dashboard] pump error: {e}")
 
     def _render(self):
         canvas = np.full((self.CANVAS_H, self.PANEL_W * 2, 3), 30, dtype=np.uint8)
@@ -4430,6 +4452,8 @@ def run_vf_test(cfg, sol_context=None):
         t0 = time.time()
         while time.time() - t0 < dur:
             pygame.event.pump()
+            if dashboard is not None:
+                dashboard.pump()   # tester dashboard on the MAIN thread (VF inter-trial)
             win.fill(vf_bg)
             if inter_surf:
                 x = (W - inter_surf.get_width()) // 2
@@ -4680,6 +4704,8 @@ def run_vf_test(cfg, sol_context=None):
                     is_correct=passed
                 )
                 clock.tick(60)
+                if dashboard is not None:
+                    dashboard.pump()   # tester dashboard on the MAIN thread (VF stimulus phase)
 
             if sol_quality is not None:
                 sol_quality.set_in_trial(False)  # feedback/inter-trial excluded from trial-only metric
@@ -4690,6 +4716,8 @@ def run_vf_test(cfg, sol_context=None):
             fb_start = time.time()
             while time.time() - fb_start < 1.0:
                 pygame.event.pump()
+                if dashboard is not None:
+                    dashboard.pump()   # tester dashboard on the MAIN thread (VF feedback)
                 win.fill(vf_bg)
                 draw_aruco(win)
                 txt = font.render("PASS" if passed else "FAIL", True, (0, 255, 0) if passed else (255, 0, 0))
@@ -4777,6 +4805,8 @@ def run_vf_test(cfg, sol_context=None):
             pygame.display.flip()
             waiting = True
             while waiting:
+                if dashboard is not None:
+                    dashboard.pump()   # keep the data-quality summary on the tester screen
                 for ev in pygame.event.get():
                     if ev.type == pygame.QUIT or (ev.type == pygame.KEYDOWN and ev.key == pygame.K_q):
                         waiting = False
@@ -5369,6 +5399,8 @@ def run_test(cfg, sol_context=None):
             if 0 <= gx < W and 0 <= gy < H:
                 pygame.draw.circle(surface, to_rgb_tuple(cfg['gaze_marker_color']),
                                    (gx, gy), cfg['gaze_marker_radius'], cfg['gaze_marker_width'])
+        if dashboard is not None:
+            dashboard.pump()   # render tester dashboard on the MAIN thread (covers inter-trial + feedback)
         return wg_pt, sol_mapped, sol_raw, sol_raw_data, sol_sf
 
     def show_interval_center(duration_s):
@@ -5839,6 +5871,8 @@ def run_test(cfg, sol_context=None):
             )
             
             clock.tick(60)
+            if dashboard is not None:
+                dashboard.pump()   # tester dashboard on the MAIN thread (stimulus phase)
             if t > cfg['stim_dur'] and hold_start is None: break
           except Exception as frame_err:
             # [FIX] Log frame-level errors but continue
@@ -6004,6 +6038,8 @@ def run_test(cfg, sol_context=None):
     pygame.display.flip()
     
     while True:
+        if dashboard is not None:
+            dashboard.pump()   # keep showing the data-quality summary on the tester screen
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT: break
             if ev.type == pygame.KEYDOWN and ev.key == pygame.K_q: break

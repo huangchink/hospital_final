@@ -17,6 +17,7 @@ import threading
 import queue
 import asyncio
 import json
+import csv
 import traceback
 import ctypes
 from collections import deque
@@ -469,29 +470,64 @@ def sol_sample_is_valid(sample):
             return False
 
 
+def _sol_eye_valid(sample, attr):
+    """Per-eye Sol validity: True if that eye's gaze is valid (SDK confidence threshold), else
+    fall back to eye_status == NORMAL. attr is 'left_eye' or 'right_eye'."""
+    try:
+        eye = getattr(sample, attr)
+    except Exception:
+        return False
+    try:
+        return bool(eye.gaze.validity)
+    except Exception:
+        pass
+    try:
+        es = getattr(eye, 'eye_status', None)
+        return int(getattr(es, 'value', es)) == 2  # EyeStatus.NORMAL
+    except Exception:
+        return False
+
+
+class _ValidityCounter:
+    """Counts valid/total samples overall and within trials (inter-trial excluded)."""
+    __slots__ = ('total', 'valid', 'trial_total', 'trial_valid')
+
+    def __init__(self):
+        self.total = 0; self.valid = 0; self.trial_total = 0; self.trial_valid = 0
+
+    def add(self, is_valid, in_trial):
+        self.total += 1
+        if is_valid:
+            self.valid += 1
+        if in_trial:
+            self.trial_total += 1
+            if is_valid:
+                self.trial_valid += 1
+
+    def overall_pct(self):
+        return (self.valid / self.total * 100.0) if self.total else None
+
+    def trial_pct(self):
+        return (self.trial_valid / self.trial_total * 100.0) if self.trial_total else None
+
+
 class SolQualityTracker:
-    """Tracks Sol gaze-data completeness over the samples actually RECEIVED from the glasses.
-
-    By design (Sol may drop packets in transmission) the missing-data rate is computed only
-    over received samples: missing% = invalid_received / total_received, where a sample is
-    'valid' iff combined.gaze_3d.validity is True.
-
-    Provides:
-      - a rolling real-time window (default 3s) for the live tester gauge,
-      - an overall (whole-test) rate,
-      - a trial-only rate (samples received while a trial is active; inter-trial excluded).
-    Thread-safe: fed from the test loop, read from the dashboard thread.
+    """Tracks gaze-data quality during the test, channel by channel, with an overall and a
+    trial-only (inter-trial excluded) VALIDITY rate per channel:
+      Sol    : combined / left eye / right eye  (over RECEIVED samples; Sol may drop packets)
+      Webcam : face placement OK / left eye / right eye  (over detected frames)
+    Also keeps a rolling real-time window of Sol-combined validity for the live tester gauge.
+    Thread-safe: Sol fed from the test loop, webcam fed from the dashboard thread.
     """
+
+    CHANNELS = ('sol_combined', 'sol_left', 'sol_right', 'wc_face', 'wc_left', 'wc_right')
 
     def __init__(self, window_sec=3.0):
         self.window_sec = float(window_sec) if window_sec and window_sec > 0 else 3.0
         self._lock = threading.Lock()
-        self._win = deque()          # (recv_time_s, is_valid_bool)
-        self.total = 0
-        self.invalid = 0
-        self.trial_total = 0
-        self.trial_invalid = 0
+        self._win = deque()          # (recv_time_s, sol_combined_valid)
         self._in_trial = False
+        self.chan = {k: _ValidityCounter() for k in self.CHANNELS}
 
     def _trim(self, now):
         cutoff = now - self.window_sec
@@ -499,28 +535,39 @@ class SolQualityTracker:
         while w and w[0][0] < cutoff:
             w.popleft()
 
-    def add_sample(self, sample, now=None):
-        """Record one received Sol sample. `now` is the PC receive time (seconds)."""
-        valid = sol_sample_is_valid(sample)
-        if now is None:
-            now = time.time()
-        with self._lock:
-            self.total += 1
-            if not valid:
-                self.invalid += 1
-            if self._in_trial:
-                self.trial_total += 1
-                if not valid:
-                    self.trial_invalid += 1
-            self._win.append((now, valid))
-            self._trim(now)
-
     def set_in_trial(self, flag):
         with self._lock:
             self._in_trial = bool(flag)
 
+    def in_trial(self):
+        with self._lock:
+            return self._in_trial
+
+    def add_sample(self, sample, now=None):
+        """Record one received Sol sample (combined + per-eye validity)."""
+        combined = sol_sample_is_valid(sample)
+        left = _sol_eye_valid(sample, 'left_eye')
+        right = _sol_eye_valid(sample, 'right_eye')
+        if now is None:
+            now = time.time()
+        with self._lock:
+            it = self._in_trial
+            self.chan['sol_combined'].add(combined, it)
+            self.chan['sol_left'].add(left, it)
+            self.chan['sol_right'].add(right, it)
+            self._win.append((now, combined))
+            self._trim(now)
+
+    def add_webcam(self, face_ok, left_ok, right_ok):
+        """Record one webcam detection frame's quality (from the face-quality overlay)."""
+        with self._lock:
+            it = self._in_trial
+            self.chan['wc_face'].add(bool(face_ok), it)
+            self.chan['wc_left'].add(bool(left_ok), it)
+            self.chan['wc_right'].add(bool(right_ok), it)
+
     def snapshot(self):
-        """Return a dict with realtime/overall/trial missing-rates for display.
+        """Sol-combined MISSING-rate snapshot for the live gauge + result screen (back-compatible).
         realtime is None when no samples arrived in the window (=> 'NO SIGNAL')."""
         now = time.time()
         with self._lock:
@@ -530,14 +577,71 @@ class SolQualityTracker:
             if n > 0:
                 inv = sum(1 for (_, v) in self._win if not v)
                 realtime = (inv / n * 100.0, n)
-            overall = (self.invalid / self.total * 100.0) if self.total else None
-            trial = (self.trial_invalid / self.trial_total * 100.0) if self.trial_total else None
+            c = self.chan['sol_combined']
+            ov = c.overall_pct(); tr = c.trial_pct()
             return {
-                'realtime': realtime, 'overall': overall, 'trial': trial,
-                'total': self.total, 'invalid': self.invalid,
-                'trial_total': self.trial_total, 'trial_invalid': self.trial_invalid,
+                'realtime': realtime,
+                'overall': (100.0 - ov) if ov is not None else None,
+                'trial': (100.0 - tr) if tr is not None else None,
+                'total': c.total, 'invalid': c.total - c.valid,
+                'trial_total': c.trial_total, 'trial_invalid': c.trial_total - c.trial_valid,
                 'window_sec': self.window_sec,
             }
+
+    def validity_report(self, trial_only=True):
+        """Per-channel VALIDITY % (trial-only by default) as {channel: (pct_or_None, n_samples)}."""
+        with self._lock:
+            out = {}
+            for k in self.CHANNELS:
+                c = self.chan[k]
+                out[k] = ((c.trial_pct() if trial_only else c.overall_pct()),
+                          (c.trial_total if trial_only else c.total))
+            return out
+
+
+def build_quality_summary(quality, cfg):
+    """Trial-only validity summary for the trackers enabled in cfg. Returns
+    (display_lines, json_dict): display_lines = [(label, pct_or_None), ...];
+    json_dict maps channel -> {validity_pct, samples}. Only enabled trackers are included."""
+    if quality is None:
+        return [], {}
+    rep = quality.validity_report(trial_only=True)
+    cfg = cfg or {}
+    groups = []
+    if cfg.get('enable_sol'):
+        groups += [('sol_combined', 'Sol combined'), ('sol_left', 'Sol left eye'),
+                   ('sol_right', 'Sol right eye')]
+    if cfg.get('enable_webcam'):
+        groups += [('wc_face', 'Webcam face'), ('wc_left', 'Webcam left eye'),
+                   ('wc_right', 'Webcam right eye')]
+    lines, data = [], {}
+    for key, label in groups:
+        pct, n = rep.get(key, (None, 0))
+        lines.append((label, pct))
+        data[key] = {'validity_pct': pct, 'samples': n}
+    return lines, data
+
+
+def build_summary_lines(quality, cfg):
+    """End-of-test tester display: one uniform list of (label, pct, kind) for enabled trackers.
+    Sol shows whole-test & trials-only MISSING rates plus per-eye validity; webcam shows face/eye
+    validity. kind is 'missing' (green when low) or 'valid' (green when high)."""
+    if quality is None:
+        return []
+    cfg = cfg or {}
+    rep = quality.validity_report(trial_only=True)
+    snap = quality.snapshot()
+    lines = []
+    if cfg.get('enable_sol'):
+        lines.append(("Sol missing (whole)", snap['overall'], 'missing'))
+        lines.append(("Sol missing (trials)", snap['trial'], 'missing'))
+        lines.append(("Sol left eye", rep['sol_left'][0], 'valid'))
+        lines.append(("Sol right eye", rep['sol_right'][0], 'valid'))
+    if cfg.get('enable_webcam'):
+        lines.append(("Webcam face", rep['wc_face'][0], 'valid'))
+        lines.append(("Webcam left eye", rep['wc_left'][0], 'valid'))
+        lines.append(("Webcam right eye", rep['wc_right'][0], 'valid'))
+    return lines
 
 
 class DashboardState:
@@ -728,7 +832,8 @@ def draw_face_quality_overlay(frame_bgr, face_info, draw_oval=True,
                               oval_bottom_y_frac=_GUIDE_OVAL_BOTTOM_Y_FRAC):
     """Draw green/red face & eye boxes plus a head-shaped centering guide onto frame_bgr (modified
     in place). The guide keeps a FIXED width:height ratio (oval_size_frac scales the whole oval) and
-    is anchored by its BOTTOM point, so changing the size keeps the bottom fixed. Returns (fits, reason)."""
+    is anchored by its BOTTOM point, so changing the size keeps the bottom fixed.
+    Returns (fits, reason, left_ok, right_ok) where *_ok report each eye's visibility."""
     h, w = frame_bgr.shape[:2]
     oval_ry = max(1, int(h * oval_size_frac / 2.0))
     oval_rx = max(1, int(_GUIDE_ASPECT * oval_ry))     # width derived from height (fixed face ratio)
@@ -741,6 +846,7 @@ def draw_face_quality_overlay(frame_bgr, face_info, draw_oval=True,
     if draw_oval:
         _draw_face_guide(frame_bgr, oval_cx, oval_cy, oval_rx, oval_ry, guide_color)
 
+    left_ok = right_ok = False
     if face_info and getattr(face_info, 'status', False):
         can_gaze = bool(getattr(face_info, 'can_gaze_estimation', False))
         try:
@@ -749,37 +855,37 @@ def draw_face_quality_overlay(frame_bgr, face_info, draw_oval=True,
                 cv2.rectangle(frame_bgr, (fx, fy), (fx + fw, fy + fh), guide_color, 2)
         except Exception:
             pass
-        eyes_bad = not can_gaze
         bad_reason = "EYES BLOCKED"
         left_ear, right_ear = eye_aspect_ratios(face_info)
         skin_ref = _skin_reference(frame_bgr, face_info.face_rect) if _EYE_USE_PIXEL_OCCLUSION else None
-        for rect, ear in ((getattr(face_info, 'left_rect', None), left_ear),
-                          (getattr(face_info, 'right_rect', None), right_ear)):
-            if rect is None:
-                continue
-            try:
-                ex, ey, ew, eh = _rect_int(rect)
-                if ew <= 0 or eh <= 0:
-                    continue
-                col = _Q_GREEN
-                if not can_gaze:
-                    col = _Q_RED
-                else:
-                    closed = (ear is not None and ear < _EAR_CLOSED_THRESH)  # EAR: eye open/closed
-                    occ = eye_region_occluded(frame_bgr, rect, skin_ref) if _EYE_USE_PIXEL_OCCLUSION else None
-                    if closed:
-                        col = _Q_RED; eyes_bad = True; bad_reason = "EYES CLOSED"
-                    elif occ is True:
-                        col = _Q_RED; eyes_bad = True; bad_reason = "EYES BLOCKED"
-                cv2.rectangle(frame_bgr, (ex, ey), (ex + ew, ey + eh), col, 2)
-            except Exception:
-                pass
-        if eyes_bad:
+        ok_flags = {'L': False, 'R': False}
+        for key, rect, ear in (('L', getattr(face_info, 'left_rect', None), left_ear),
+                               ('R', getattr(face_info, 'right_rect', None), right_ear)):
+            ok = False
+            if rect is not None:
+                try:
+                    ex, ey, ew, eh = _rect_int(rect)
+                    if ew > 0 and eh > 0:
+                        if can_gaze:
+                            closed = (ear is not None and ear < _EAR_CLOSED_THRESH)  # EAR: eye open/closed
+                            occ = eye_region_occluded(frame_bgr, rect, skin_ref) if _EYE_USE_PIXEL_OCCLUSION else None
+                            if closed:
+                                bad_reason = "EYES CLOSED"
+                            elif occ is True:
+                                bad_reason = "EYES BLOCKED"
+                            else:
+                                ok = True
+                        cv2.rectangle(frame_bgr, (ex, ey), (ex + ew, ey + eh), _Q_GREEN if ok else _Q_RED, 2)
+                except Exception:
+                    ok = False
+            ok_flags[key] = ok
+        left_ok, right_ok = ok_flags['L'], ok_flags['R']
+        if not (left_ok and right_ok):
             _put_text(frame_bgr, bad_reason, (oval_cx, oval_cy + oval_ry + 26), _Q_RED, scale=0.6, center=True)
 
     _put_text(frame_bgr, reason, (oval_cx, max(22, oval_cy - oval_ry - 12)),
               _Q_GREEN if fits else _Q_RED, scale=0.7, center=True)
-    return fits, reason
+    return fits, reason, left_ok, right_ok
 
 
 def guide_kwargs_from_cfg(cfg):
@@ -823,7 +929,7 @@ class TesterDashboard:
     PANEL_W = 480
     CANVAS_H = 540
 
-    def __init__(self, gf, sol_quality, dash_state, cfg, tester_rect=None, fps=15):
+    def __init__(self, gf, sol_quality, dash_state, cfg, tester_rect=None, fps=15, session_dir=None):
         self.gf = gf
         self.sol_quality = sol_quality
         self.dash_state = dash_state
@@ -831,9 +937,13 @@ class TesterDashboard:
         self.tester_rect = tester_rect
         self.fps = max(1, int(fps))
         self.window_sec = float(self.cfg.get('sol_quality_window', 3.0))
+        self.enable_sol = bool(self.cfg.get('enable_sol'))
+        self.session_dir = session_dir
         self._running = False
         self._thread = None
         self._face_aligner = None
+        self._wq_file = None
+        self._wq_writer = None
 
     def start(self):
         if self._running:
@@ -847,6 +957,13 @@ class TesterDashboard:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
         self._thread = None
+        if self._wq_file is not None:
+            try:
+                self._wq_file.close()
+            except Exception:
+                pass
+            self._wq_file = None
+            self._wq_writer = None
 
     def _ensure_aligner(self):
         if self.gf is None or self._face_aligner is not None:
@@ -897,8 +1014,15 @@ class TesterDashboard:
 
     def _render(self):
         canvas = np.full((self.CANVAS_H, self.PANEL_W * 2, 3), 30, dtype=np.uint8)
+        # Left panel always runs (it also feeds + records webcam quality). Right panel shows the
+        # end-of-test validity summary once set, otherwise the live Sol gauge.
         self._render_webcam_panel(canvas[:, :self.PANEL_W])
-        self._render_sol_panel(canvas[:, self.PANEL_W:])
+        state = self.dash_state.get() if self.dash_state else {}
+        summary = state.get('summary')
+        if summary:
+            self._render_summary(canvas[:, self.PANEL_W:], summary)
+        else:
+            self._render_sol_panel(canvas[:, self.PANEL_W:])
         cv2.line(canvas, (self.PANEL_W, 0), (self.PANEL_W, self.CANVAS_H), (70, 70, 70), 1)
         return canvas
 
@@ -920,7 +1044,11 @@ class TesterDashboard:
                 face_info = None
         disp = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
         try:
-            draw_face_quality_overlay(disp, face_info, draw_oval=True, **guide_kwargs_from_cfg(self.cfg))
+            fits, reason, l_ok, r_ok = draw_face_quality_overlay(
+                disp, face_info, draw_oval=True, **guide_kwargs_from_cfg(self.cfg))
+            if self.sol_quality is not None:
+                self.sol_quality.add_webcam(fits, l_ok, r_ok)   # accumulate trial-only validity
+            self._record_webcam_quality(reason, fits, l_ok, r_ok)
         except Exception as e:
             print(f"[Dashboard] overlay error: {e}")
         disp = cv2.resize(disp, (pw, ph))
@@ -931,7 +1059,7 @@ class TesterDashboard:
         ph, pw = panel.shape[:2]
         _put_text(panel, "SOL GAZE QUALITY", (16, 32), _Q_WHITE, scale=0.7)
 
-        if self.sol_quality is None:
+        if self.sol_quality is None or not self.enable_sol:
             _put_text(panel, "Sol disabled", (16, 84), _Q_GRAY, scale=0.7)
         else:
             snap = self.sol_quality.snapshot()
@@ -973,6 +1101,40 @@ class TesterDashboard:
         phase = st.get('phase', '')
         _put_text(panel, f"Trial {tn}   cpd={cpd:.2f}   {side}", (16, ty + 8), _Q_WHITE, scale=0.6)
         _put_text(panel, f"phase: {phase}", (16, ty + 38), (185, 185, 185), scale=0.55)
+
+    def _record_webcam_quality(self, reason, face_ok, left_ok, right_ok):
+        """Append one webcam-quality row to webcam_quality.csv in the session folder (if any)."""
+        if not self.session_dir:
+            return
+        try:
+            if self._wq_writer is None:
+                self._wq_file = open(os.path.join(self.session_dir, "webcam_quality.csv"),
+                                     "w", newline="", encoding="utf-8")
+                self._wq_writer = csv.writer(self._wq_file)
+                self._wq_writer.writerow(["pc_timestamp_ms", "in_trial", "face_reason",
+                                          "face_ok", "left_eye_ok", "right_eye_ok"])
+            in_trial = self.sol_quality.in_trial() if self.sol_quality is not None else False
+            self._wq_writer.writerow([int(time.time() * 1000), int(bool(in_trial)), reason,
+                                      int(bool(face_ok)), int(bool(left_ok)), int(bool(right_ok))])
+        except Exception as e:
+            print(f"[Dashboard] webcam-quality CSV error: {e}")
+
+    def _render_summary(self, panel, lines):
+        """Render the end-of-test data-quality summary as a uniform list on the tester panel.
+        Each line is (label, pct, kind): kind 'valid' is green when high, 'missing' green when low."""
+        _put_text(panel, "DATA QUALITY (this test)", (16, 34), _Q_WHITE, scale=0.62)
+        _put_text(panel, "within trials", (16, 56), _Q_GRAY, scale=0.5)
+        y = 92
+        for item in lines:
+            label, pct = item[0], item[1]
+            kind = item[2] if len(item) > 2 else 'valid'
+            if pct is None:
+                txt, col = f"{label}: N/A", _Q_GRAY
+            else:
+                miss = pct if kind == 'missing' else (100.0 - pct)
+                txt, col = f"{label}: {pct:.0f}%", _quality_color(miss)
+            _put_text(panel, txt, (18, y), col, scale=0.62)
+            y += 34
 
 
 def resolve_tester_rect(cfg):
@@ -4037,13 +4199,15 @@ def run_vf_test(cfg, sol_context=None):
         recorder = Recorder(output_dir="VF_output", subject_id=cfg.get('user_name', 'test'), is_va=False)
 
     # [NEW] Sol gaze-quality tracker + tester dashboard (mirrors the VA test)
-    sol_quality = SolQualityTracker(window_sec=cfg.get('sol_quality_window', 3.0)) if cfg.get('enable_sol') else None
+    sol_quality = (SolQualityTracker(window_sec=cfg.get('sol_quality_window', 3.0))
+                   if (cfg.get('enable_sol') or cfg.get('enable_webcam')) else None)
     dash_state = DashboardState()
     dashboard = None
     try:
         if cfg.get('enable_webcam') or cfg.get('enable_sol'):
             tester_rect = resolve_tester_rect(cfg)
-            dashboard = TesterDashboard(gf, sol_quality, dash_state, cfg, tester_rect=tester_rect)
+            dashboard = TesterDashboard(gf, sol_quality, dash_state, cfg, tester_rect=tester_rect,
+                                        session_dir=getattr(recorder, 'session_dir', None))
             dashboard.start()
             print(f"[VF Dashboard] Tester dashboard started (tester rect: {tester_rect})")
     except Exception as e:
@@ -4068,6 +4232,8 @@ def run_vf_test(cfg, sol_context=None):
                     'trial_only_received_samples': snap['trial_total'],
                     'trial_only_invalid_samples': snap['trial_invalid'],
                     'realtime_window_sec': snap['window_sec'],
+                    'trial_validity': build_quality_summary(sol_quality, cfg)[1],
+                    'enabled': {'webcam': bool(cfg.get('enable_webcam')), 'sol': bool(cfg.get('enable_sol'))},
                 }
                 with open(os.path.join(sess_dir, 'sol_quality_metrics.json'), 'w', encoding='utf-8') as f:
                     json.dump(metrics, f, ensure_ascii=False, indent=2)
@@ -4591,6 +4757,14 @@ def run_vf_test(cfg, sol_context=None):
             df.to_csv(csv_path, index=False)
             print(f"[VF Test] Results saved to {csv_path}")
 
+        # [NEW] End-of-test data-quality summary on the TESTER dashboard (enabled trackers only):
+        # Sol missing-data rates + per-channel trial-only validity, in one uniform list.
+        summary_lines = build_summary_lines(sol_quality, cfg)
+        if summary_lines:
+            dash_state.update(summary=summary_lines)
+            print("[Data Quality] " + ", ".join(
+                f"{lbl} {('%.0f%%' % pct) if pct is not None else 'N/A'}" for lbl, pct, _k in summary_lines))
+
         # Show summary
         if results:
             pass_count = sum(1 for r in results if r['result'] == 'PASS')
@@ -4598,13 +4772,6 @@ def run_vf_test(cfg, sol_context=None):
             win.fill(vf_bg)
             summary = font.render(f"VF Test Complete: {pass_count}/{total} PASS", True, (255, 255, 255))
             win.blit(summary, (cx - summary.get_width() // 2, cy - summary.get_height() // 2))
-            if sol_quality is not None:
-                snap = sol_quality.snapshot()
-                ovs = f"{snap['overall']:.1f}%" if snap['overall'] is not None else "N/A"
-                trs = f"{snap['trial']:.1f}%" if snap['trial'] is not None else "N/A"
-                sol_line = small_font.render(f"Sol missing data - whole test: {ovs}  |  trials only: {trs}",
-                                             True, (255, 220, 120))
-                win.blit(sol_line, (cx - sol_line.get_width() // 2, cy + 10))
             hint = small_font.render("Press Q to exit", True, (150, 150, 150))
             win.blit(hint, (cx - hint.get_width() // 2, cy + 50))
             pygame.display.flip()
@@ -4928,13 +5095,15 @@ def run_test(cfg, sol_context=None):
         recorder = Recorder(output_dir="VA_output", subject_id=cfg['user_name'], session_num="1", is_va=True)
 
     # [NEW] Sol gaze-quality tracker (missing-data rate over RECEIVED samples) + tester dashboard
-    sol_quality = SolQualityTracker(window_sec=cfg.get('sol_quality_window', 3.0)) if cfg.get('enable_sol') else None
+    sol_quality = (SolQualityTracker(window_sec=cfg.get('sol_quality_window', 3.0))
+                   if (cfg.get('enable_sol') or cfg.get('enable_webcam')) else None)
     dash_state = DashboardState()
     dashboard = None
     try:
         if cfg.get('enable_webcam') or cfg.get('enable_sol'):
             tester_rect = resolve_tester_rect(cfg)
-            dashboard = TesterDashboard(gf, sol_quality, dash_state, cfg, tester_rect=tester_rect)
+            dashboard = TesterDashboard(gf, sol_quality, dash_state, cfg, tester_rect=tester_rect,
+                                        session_dir=getattr(recorder, 'session_dir', None))
             dashboard.start()
             print(f"[Dashboard] Tester dashboard started (tester rect: {tester_rect})")
     except Exception as e:
@@ -4960,6 +5129,8 @@ def run_test(cfg, sol_context=None):
                     'trial_only_received_samples': snap['trial_total'],
                     'trial_only_invalid_samples': snap['trial_invalid'],
                     'realtime_window_sec': snap['window_sec'],
+                    'trial_validity': build_quality_summary(sol_quality, cfg)[1],
+                    'enabled': {'webcam': bool(cfg.get('enable_webcam')), 'sol': bool(cfg.get('enable_sol'))},
                 }
                 with open(os.path.join(sess_dir, 'sol_quality_metrics.json'), 'w', encoding='utf-8') as f:
                     json.dump(metrics, f, ensure_ascii=False, indent=2)
@@ -5798,6 +5969,14 @@ def run_test(cfg, sol_context=None):
         tr_s = f"{sol_trial_missing:.1f}%" if sol_trial_missing is not None else "N/A"
         print(f"[Sol Quality] Missing data - whole test: {ov_s} | trials only: {tr_s}")
 
+    # [NEW] End-of-test data-quality summary on the TESTER dashboard (enabled trackers only):
+    # Sol missing-data rates + per-channel trial-only validity, in one uniform list.
+    summary_lines = build_summary_lines(sol_quality, cfg)
+    if summary_lines:
+        dash_state.update(summary=summary_lines)
+        print("[Data Quality] " + ", ".join(
+            f"{lbl} {('%.0f%%' % pct) if pct is not None else 'N/A'}" for lbl, pct, _k in summary_lines))
+
     # Final Result & CSV
     final_cpd = float(stair.freq)
     va_score  = get_va_result_cpd(final_cpd)
@@ -5821,15 +6000,7 @@ def run_test(cfg, sol_context=None):
 
     win.blit(text1, ((W - text1.get_width()) // 2, H // 3 - 50))
     win.blit(text2, ((W - text2.get_width()) // 2, H // 3 + 50))
-    y_extra = H // 3 + 130
-    if sol_quality is not None:
-        ov_s = f"{sol_overall_missing:.1f}%" if sol_overall_missing is not None else "N/A"
-        tr_s = f"{sol_trial_missing:.1f}%" if sol_trial_missing is not None else "N/A"
-        sol_line = info_font.render(f"Sol missing data - whole test: {ov_s}  |  trials only: {tr_s}",
-                                    True, (255, 220, 120))
-        win.blit(sol_line, ((W - sol_line.get_width()) // 2, y_extra))
-        y_extra += 60
-    win.blit(text3, ((W - text3.get_width()) // 2, y_extra + 20))
+    win.blit(text3, ((W - text3.get_width()) // 2, H // 3 + 150))
     pygame.display.flip()
     
     while True:

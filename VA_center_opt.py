@@ -4767,6 +4767,15 @@ def run_vf_test(cfg, sol_context=None):
                     eval_source=cfg.get('eval_source', 'Webcam')
                 )
 
+        # [FIX] Pause the Sol scene video stream now that the VF points are done - the SDK's native
+        # video decoder can access-violate under sustained streaming during the idle summary view.
+        if cfg.get('enable_sol') and sol_connector is not None:
+            try:
+                sol_connector.pause_scene_stream()
+                print("[Sol] Scene stream paused after VF points (summary view)")
+            except Exception as e:
+                print(f"[Sol] pause_scene_stream failed: {e}")
+
         # Print Sol stats
         if cfg['enable_sol'] and sol_debug_counters['total_frames'] > 0:
             print("\n" + "=" * 50)
@@ -5985,6 +5994,16 @@ def run_test(cfg, sol_context=None):
     # so it can be reused when returning to settings.
     if sol_projector:
         sol_projector.stop_background_detection()
+
+    # [FIX] Pause the Sol scene video stream now that trials are done. The SDK's native video
+    # decoder (handle_video_packet) can access-violate under sustained streaming during the idle
+    # result-screen view; we don't need the scene camera anymore. It resumes on the next test/preview.
+    if cfg.get('enable_sol') and sol_connector is not None:
+        try:
+            sol_connector.pause_scene_stream()
+            print("[Sol] Scene stream paused after trials (result-screen view)")
+        except Exception as e:
+            print(f"[Sol] pause_scene_stream failed: {e}")
 
     # [DEBUG] Print Sol gaze statistics
     if cfg['enable_sol'] and sol_debug_counters['total_frames'] > 0:

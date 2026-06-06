@@ -624,17 +624,19 @@ def build_quality_summary(quality, cfg):
 
 def build_summary_lines(quality, cfg):
     """End-of-test tester display: one uniform list of (label, pct, kind) for enabled trackers.
-    Sol shows whole-test & trials-only MISSING rates plus per-eye validity; webcam shows face/eye
-    validity. kind is 'missing' (green when low) or 'valid' (green when high)."""
+    Every value is a VALIDITY percentage (100% = all data valid, 0% = all missing), so all lines
+    read the same way and use kind 'valid' (green when high). Sol shows whole-test and trial-only
+    combined validity plus per-eye validity; webcam shows face/eye validity. Enabled trackers only."""
     if quality is None:
         return []
     cfg = cfg or {}
     rep = quality.validity_report(trial_only=True)
     snap = quality.snapshot()
+    inv = lambda p: ((100.0 - p) if p is not None else None)   # missing% -> validity%
     lines = []
     if cfg.get('enable_sol'):
-        lines.append(("Sol missing (whole)", snap['overall'], 'missing'))
-        lines.append(("Sol missing (trials)", snap['trial'], 'missing'))
+        lines.append(("Sol valid (whole)", inv(snap['overall']), 'valid'))
+        lines.append(("Sol valid (trials)", inv(snap['trial']), 'valid'))
         lines.append(("Sol left eye", rep['sol_left'][0], 'valid'))
         lines.append(("Sol right eye", rep['sol_right'][0], 'valid'))
     if cfg.get('enable_webcam'):
@@ -1145,7 +1147,7 @@ class TesterDashboard:
         """Render the end-of-test data-quality summary as a uniform list on the tester panel.
         Each line is (label, pct, kind): kind 'valid' is green when high, 'missing' green when low."""
         _put_text(panel, "DATA QUALITY (this test)", (16, 34), _Q_WHITE, scale=0.62)
-        _put_text(panel, "within trials", (16, 56), _Q_GRAY, scale=0.5)
+        _put_text(panel, "% valid  (100 = all good, 0 = all missing)", (16, 56), _Q_GRAY, scale=0.45)
         y = 92
         for item in lines:
             label, pct = item[0], item[1]

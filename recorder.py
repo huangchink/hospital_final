@@ -42,7 +42,11 @@ class Recorder:
             "mapped_gaze_x", "mapped_gaze_y",  # ArUco marker-based screen projection (pixels)
             "raw_gaze_x", "raw_gaze_y",  # Raw SDK gaze_2d in Sol camera coordinates (pixels)
             "left_pupil_size_mm", "right_pupil_size_mm",
-            "visual_angle_deg", "angular_velocity_dps"
+            "visual_angle_deg", "angular_velocity_dps",
+            # Per-eye validity from the SDK (richer quality signal than is_valid alone):
+            # eye_status: 0=NO_EYE, 1=BLINK, 2=NORMAL ; conf = per-eye gaze confidence
+            "left_eye_status", "right_eye_status",
+            "left_eye_conf", "right_eye_conf"
         ])
 
         # 3. Trial Events Log
@@ -376,6 +380,26 @@ class Recorder:
                 except:
                     pass
 
+                # Per-eye status (0=NO_EYE, 1=BLINK, 2=NORMAL) and gaze confidence from the SDK
+                left_eye_status = right_eye_status = -1
+                left_eye_conf = right_eye_conf = 0.0
+                try:
+                    if raw_data and hasattr(raw_data, 'left_eye') and raw_data.left_eye:
+                        es = getattr(raw_data.left_eye, 'eye_status', None)
+                        if es is not None:
+                            left_eye_status = int(getattr(es, 'value', es))
+                        left_eye_conf = float(getattr(raw_data.left_eye, 'confidence', 0.0) or 0.0)
+                except:
+                    pass
+                try:
+                    if raw_data and hasattr(raw_data, 'right_eye') and raw_data.right_eye:
+                        es = getattr(raw_data.right_eye, 'eye_status', None)
+                        if es is not None:
+                            right_eye_status = int(getattr(es, 'value', es))
+                        right_eye_conf = float(getattr(raw_data.right_eye, 'confidence', 0.0) or 0.0)
+                except:
+                    pass
+
                 # Calculate visual angle and angular velocity (using mapped coordinates)
                 visual_angle_deg = 0.0
                 angular_velocity_dps = 0.0
@@ -414,7 +438,11 @@ class Recorder:
                     left_pupil_mm,
                     right_pupil_mm,
                     visual_angle_deg,
-                    angular_velocity_dps
+                    angular_velocity_dps,
+                    left_eye_status,
+                    right_eye_status,
+                    left_eye_conf,
+                    right_eye_conf
                 ])
 
             except Exception as e:

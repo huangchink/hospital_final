@@ -272,6 +272,17 @@ class Recorder:
                 ts_file, ts_writer = self._init_timestamp_writer("screen_video_timestamp.csv")
                 if (out_w, out_h) != (w, h):
                     print(f"[Recorder] Screen recording downscaled {w}x{h} -> {out_w}x{out_h}")
+                # Record the capture resolution (= gaze coordinate space) and the (possibly
+                # downscaled) video resolution so the replayer can scale gaze overlays correctly.
+                try:
+                    import json as _json
+                    with open(os.path.join(self.session_dir, "screen_meta.json"), "w", encoding="utf-8") as mf:
+                        _json.dump({
+                            "screen_width": int(w), "screen_height": int(h),
+                            "screen_video_width": int(out_w), "screen_video_height": int(out_h),
+                        }, mf, indent=2)
+                except Exception as e:
+                    print(f"[Recorder] Could not write screen_meta.json: {e}")
 
             # [OPT] Convert buffer to numpy array in worker thread
             frame_rgb = np.frombuffer(buf, dtype=np.uint8).reshape((h, w, 3))

@@ -1,6 +1,8 @@
 import sys
 import os
 import time
+import json
+from datetime import datetime
 import cv2
 import pandas as pd
 import numpy as np
@@ -9,6 +11,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QPushButton, QLabel, QCheckBox, QListWidget, QListWidgetItem,
     QFileDialog, QStatusBar, QMenuBar, QGroupBox, QFrame,
+    QLineEdit, QRadioButton, QButtonGroup,
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QMimeData, pyqtSignal, QPoint,
@@ -105,6 +108,11 @@ class PlaybackEngine(QWidget):
         self.sol_gaze_df = None
         self.trial_events_df = None
         self.webcam_quality_df = None
+        self.review = None  # human-in-the-loop review labels (see ReviewStore methods)
+        # Gaze coordinate space (original screen resolution). The screen video may be
+        # downscaled, so gaze overlays must be scaled from this to the video resolution.
+        self.screen_width = None
+        self.screen_height = None
         self.start_time = 0.0
         self.duration = 0.0
         self.master_clock = 0.0
@@ -133,6 +141,9 @@ class PlaybackEngine(QWidget):
         self.sol_gaze_df = None
         self.trial_events_df = None
         self.webcam_quality_df = None
+        self.review = None
+        self.screen_width = None
+        self.screen_height = None
         self.master_clock = 0.0
         self.last_valid_sol_gaze = None
         self.last_sol_gaze_time = None
@@ -218,9 +229,143 @@ class PlaybackEngine(QWidget):
             except Exception as e:
                 print(f"Error loading webcam_quality.csv: {e}")
 
+        # Screen resolution metadata (gaze coordinate space). The screen video may be
+        # downscaled; gaze overlays are scaled from screen_width/height to the video size.
+        meta_path = os.path.join(directory, "screen_meta.json")
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                self.screen_width = int(meta.get("screen_width")) if meta.get("screen_width") else None
+                self.screen_height = int(meta.get("screen_height")) if meta.get("screen_height") else None
+                print(f"Screen meta: gaze coord space {self.screen_width}x{self.screen_height}, "
+                      f"video {meta.get('screen_video_width')}x{meta.get('screen_video_height')}")
+            except Exception as e:
+                print(f"Error loading screen_meta.json: {e}")
+        else:
+            print("No screen_meta.json (older session) — gaze overlay assumes screen video is full resolution")
+
+        # Human-in-the-loop review labels (pass/fail/discard per trial + keep/discard record)
+        self._load_or_init_review(directory)
+
         print(f"Session loaded. Duration: {self.duration:.2f}s")
         self.session_loaded.emit()
         return True
+
+    # -- Review labels (human-in-the-loop) ---------------------------------
+
+    REVIEW_FILE = "review_labels.json"
+
+    def _review_path(self):
+        return os.path.join(self.session_dir, self.REVIEW_FILE) if self.session_dir else None
+
+    def _load_or_init_review(self, directory):
+        """Load review_labels.json if present, else initialise from the test's auto results.
+        Per-trial labels pre-fill from trial_events 'result' (PASS->pass, FAIL->fail); the
+        reviewer confirms or overrides. 'reviewed' flips True only on an explicit action."""
+        path = os.path.join(directory, self.REVIEW_FILE)
+        existing = {}
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+            except Exception as e:
+                print(f"Error loading {self.REVIEW_FILE}: {e}")
+                existing = {}
+
+        ex_trials = existing.get("trials", {}) if isinstance(existing, dict) else {}
+        ex_record = existing.get("record", {}) if isinstance(existing, dict) else {}
+
+        trials = {}
+        if self.trial_events_df is not None:
+            for _, row in self.trial_events_df.iterrows():
+                tnum = str(row.get("trial_number", "?"))
+                auto = str(row.get("result", "")).upper()
+                auto_label = "pass" if auto == "PASS" else ("fail" if auto == "FAIL" else "discard")
+                prev = ex_trials.get(tnum, {})
+                trials[tnum] = {
+                    "label": prev.get("label", auto_label),
+                    "auto_result": auto,
+                    "cpd": row.get("cpd", None),
+                    "side": row.get("side", None),
+                    "note": prev.get("note", ""),
+                    "reviewed": bool(prev.get("reviewed", False)),
+                }
+
+        self.review = {
+            "schema_version": 1,
+            "session": os.path.basename(directory.rstrip("/\\")),
+            "reviewer": existing.get("reviewer", "") if isinstance(existing, dict) else "",
+            "reviewed_at": existing.get("reviewed_at", "") if isinstance(existing, dict) else "",
+            "record": {
+                "label": ex_record.get("label", "keep"),
+                "note": ex_record.get("note", ""),
+                "reviewed": bool(ex_record.get("reviewed", False)),
+            },
+            "trials": trials,
+        }
+        n_done = sum(1 for t in trials.values() if t["reviewed"])
+        print(f"Review labels: {n_done}/{len(trials)} trials reviewed"
+              + (" (loaded existing)" if existing else " (initialised from test results)"))
+
+    def save_review(self):
+        """Write review labels to review_labels.json. Returns the save time string (HH:MM:SS) or None."""
+        if not self.review or not self.session_dir:
+            return None
+        try:
+            now = datetime.now()
+            self.review["reviewed_at"] = now.isoformat(timespec="seconds")
+            with open(self._review_path(), "w", encoding="utf-8") as f:
+                json.dump(self.review, f, indent=2, ensure_ascii=False)
+            return now.strftime("%H:%M:%S")
+        except Exception as e:
+            print(f"Error saving {self.REVIEW_FILE}: {e}")
+            return None
+
+    def set_trial_label(self, tnum, label):
+        if not self.review:
+            return None
+        t = self.review["trials"].get(str(tnum))
+        if t is None:
+            return None
+        t["label"] = label
+        t["reviewed"] = True
+        return self.save_review()
+
+    def set_trial_note(self, tnum, note):
+        if not self.review:
+            return None
+        t = self.review["trials"].get(str(tnum))
+        if t is None:
+            return None
+        t["note"] = note
+        return self.save_review()
+
+    def set_record_label(self, label):
+        if not self.review:
+            return None
+        self.review["record"]["label"] = label
+        self.review["record"]["reviewed"] = True
+        return self.save_review()
+
+    def set_record_note(self, note):
+        if not self.review:
+            return None
+        self.review["record"]["note"] = note
+        return self.save_review()
+
+    def set_reviewer(self, name):
+        if not self.review:
+            return None
+        self.review["reviewer"] = name
+        return self.save_review()
+
+    def review_progress(self):
+        """(reviewed_trial_count, total_trial_count)."""
+        if not self.review:
+            return (0, 0)
+        trials = self.review["trials"]
+        return (sum(1 for t in trials.values() if t.get("reviewed")), len(trials))
 
     # -- Validity (data quality) -------------------------------------------
 
@@ -365,11 +510,16 @@ class VideoDisplayWidget(QWidget):
 
         # Gaze overlay data (set externally each tick)
         self._gaze_points: list[tuple[float, float, QColor, str]] = []
-        # Each entry: (norm_x, norm_y, colour, label)
-        # norm_x/y are in *original frame* pixel coords
+        # Each entry: (x, y, colour, label) in gaze-source pixel coords (see _gaze_src_*)
 
         self._frame_w = 0
         self._frame_h = 0
+
+        # Resolution the gaze coords are expressed in. If None, assume the displayed frame's
+        # own resolution. For the screen display this is the original screen resolution, which
+        # differs from the (possibly downscaled) screen video — so gaze must be rescaled.
+        self._gaze_src_w = None
+        self._gaze_src_h = None
 
         self.setAcceptDrops(True)
         self.setMinimumSize(120, 90)
@@ -395,6 +545,13 @@ class VideoDisplayWidget(QWidget):
     def set_gaze_points(self, pts: list):
         self._gaze_points = pts
 
+    def set_gaze_source_size(self, w, h):
+        """Resolution the gaze coords are in (e.g. original screen res). Overlays are scaled
+        from this to the displayed frame size. Pass None/0 to assume the frame's own size."""
+        self._gaze_src_w = int(w) if w else None
+        self._gaze_src_h = int(h) if h else None
+        self.update()
+
     # -- Painting -----------------------------------------------------------
 
     def paintEvent(self, event):
@@ -417,11 +574,16 @@ class VideoDisplayWidget(QWidget):
                                          Qt.TransformationMode.SmoothTransformation)
             p.drawImage(x_off, y_off, scaled)
 
-            # Gaze overlays
+            # Gaze overlays. Gaze coords are in gaze-source resolution (default: frame size);
+            # scale to the frame, then to the widget. This corrects overlays when the screen
+            # video was downscaled but gaze stayed in original screen coordinates.
+            src_w = self._gaze_src_w or iw
+            src_h = self._gaze_src_h or ih
+            sx = iw / src_w
+            sy = ih / src_h
             for gx, gy, color, lbl in self._gaze_points:
-                # Map original pixel coords → widget coords
-                vx = int(gx * scale) + x_off
-                vy = int(gy * scale) + y_off
+                vx = int(gx * sx * scale) + x_off
+                vy = int(gy * sy * scale) + y_off
                 pen = QPen(color, 2)
                 p.setPen(pen)
                 p.setBrush(Qt.BrushStyle.NoBrush)
@@ -517,7 +679,14 @@ class TimelineWidget(QWidget):
         self.update()
 
     def set_trials(self, trials: list):
-        self._trials = trials
+        # Normalise to 6-tuples (start, end, result, tnum, cpd, review_label); pad legacy 5-tuples.
+        norm = []
+        for t in trials:
+            t = tuple(t)
+            if len(t) == 5:
+                t = t + (None,)
+            norm.append(t)
+        self._trials = norm
         self.update()
 
     def set_validity(self, sol, webcam):
@@ -611,12 +780,19 @@ class TimelineWidget(QWidget):
         p.setBrush(QColor(70, 70, 70))
         p.drawRoundedRect(margin, bar_y, usable, bar_h, 4, 4)
 
-        # Trial markers
-        for (ts, te, result, tnum, cpd) in self._trials:
+        # Trial markers (coloured by review label, falling back to the test result)
+        for (ts, te, result, tnum, cpd, label) in self._trials:
             x1 = self._time_to_x(ts)
             x2 = self._time_to_x(te)
             tw = max(x2 - x1, 3)
-            color = QColor(76, 175, 80, 140) if result == "PASS" else QColor(244, 67, 54, 140)
+            if label == "discard":
+                color = QColor(150, 150, 150, 150)
+            elif label == "fail":
+                color = QColor(244, 67, 54, 160)
+            elif label == "pass":
+                color = QColor(76, 175, 80, 160)
+            else:
+                color = QColor(76, 175, 80, 140) if result == "PASS" else QColor(244, 67, 54, 140)
             p.setBrush(color)
             p.drawRoundedRect(x1, bar_y, tw, bar_h, 2, 2)
 
@@ -651,8 +827,8 @@ class TimelineWidget(QWidget):
 
         # Hover tooltip
         if self._hover_trial is not None:
-            ts, te, result, tnum, cpd = self._hover_trial
-            tip = f"Trial {tnum}  CPD: {cpd}  {result}"
+            ts, te, result, tnum, cpd, label = self._hover_trial
+            tip = f"Trial {tnum}  CPD:{cpd}  {result}" + (f" -> {label}" if label else "")
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(0, 0, 0, 200))
             tw = p.fontMetrics().horizontalAdvance(tip) + 12
@@ -768,10 +944,17 @@ class ConfigPanel(QWidget):
     open_folder_requested = pyqtSignal()
     overlay_changed = pyqtSignal()
     trial_selected = pyqtSignal(float)  # seek time
+    reviewer_changed = pyqtSignal(str)
+    record_label_changed = pyqtSignal(str)   # 'keep' | 'discard'
+    record_note_changed = pyqtSignal(str)
+    trial_label_set = pyqtSignal(str)        # 'pass' | 'fail' | 'discard' (applies to current trial)
+
+    LABEL_COLORS = {"pass": "#4CAF50", "fail": "#F44336", "discard": "#9E9E9E"}
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedWidth(260)
+        self._trial_meta = {}  # str(tnum) -> (cpd, side), for refreshing rows
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -812,12 +995,66 @@ class ConfigPanel(QWidget):
         ql.addWidget(self.qual_label)
         layout.addWidget(grp_qual)
 
-        # Trial list
+        # Review (human-in-the-loop labeling)
+        self._suppress = False  # guard against signals while populating programmatically
+        grp_review = QGroupBox("Review")
+        rv = QVBoxLayout(grp_review)
+
+        rev_row = QHBoxLayout()
+        rev_row.addWidget(QLabel("Reviewer:"))
+        self.reviewer_edit = QLineEdit()
+        self.reviewer_edit.setPlaceholderText("name / id")
+        self.reviewer_edit.editingFinished.connect(
+            lambda: (not self._suppress) and self.reviewer_changed.emit(self.reviewer_edit.text().strip()))
+        rev_row.addWidget(self.reviewer_edit)
+        rv.addLayout(rev_row)
+
+        rv.addWidget(QLabel("Whole record:"))
+        rec_row = QHBoxLayout()
+        self.record_keep_btn = QRadioButton("Keep")
+        self.record_discard_btn = QRadioButton("Discard")
+        self.record_group = QButtonGroup(self)
+        self.record_group.addButton(self.record_keep_btn)
+        self.record_group.addButton(self.record_discard_btn)
+        self.record_keep_btn.toggled.connect(
+            lambda on: on and not self._suppress and self.record_label_changed.emit("keep"))
+        self.record_discard_btn.toggled.connect(
+            lambda on: on and not self._suppress and self.record_label_changed.emit("discard"))
+        rec_row.addWidget(self.record_keep_btn)
+        rec_row.addWidget(self.record_discard_btn)
+        rec_row.addStretch()
+        rv.addLayout(rec_row)
+
+        self.record_note_edit = QLineEdit()
+        self.record_note_edit.setPlaceholderText("record note (optional)")
+        self.record_note_edit.editingFinished.connect(
+            lambda: (not self._suppress) and self.record_note_changed.emit(self.record_note_edit.text()))
+        rv.addWidget(self.record_note_edit)
+
+        self.review_progress_lbl = QLabel("Progress: – / –")
+        self.review_progress_lbl.setStyleSheet("font-size: 11px;")
+        rv.addWidget(self.review_progress_lbl)
+        self.review_saved_lbl = QLabel("")
+        self.review_saved_lbl.setStyleSheet("color: #4CAF50; font-size: 11px;")
+        rv.addWidget(self.review_saved_lbl)
+        layout.addWidget(grp_review)
+
+        # Trial list + per-trial label buttons
         grp_trials = QGroupBox("Trials")
         tl = QVBoxLayout(grp_trials)
         self.trial_list = QListWidget()
         self.trial_list.itemClicked.connect(self._on_trial_clicked)
         tl.addWidget(self.trial_list)
+        btn_row = QHBoxLayout()
+        self.btn_pass = QPushButton("Pass (1)")
+        self.btn_fail = QPushButton("Fail (2)")
+        self.btn_discard = QPushButton("Discard (3)")
+        self.btn_pass.clicked.connect(lambda: self.trial_label_set.emit("pass"))
+        self.btn_fail.clicked.connect(lambda: self.trial_label_set.emit("fail"))
+        self.btn_discard.clicked.connect(lambda: self.trial_label_set.emit("discard"))
+        for b in (self.btn_pass, self.btn_fail, self.btn_discard):
+            btn_row.addWidget(b)
+        tl.addLayout(btn_row)
         layout.addWidget(grp_trials)
 
         layout.addStretch()
@@ -826,21 +1063,68 @@ class ConfigPanel(QWidget):
         self.path_label.setText(os.path.basename(path))
         self.path_label.setToolTip(path)
 
-    def populate_trials(self, trials_df):
+    def populate_trials(self, trials_df, review=None):
         self.trial_list.clear()
+        self._trial_meta = {}
         if trials_df is None:
             return
         for _, row in trials_df.iterrows():
-            result = row.get('result', '?')
-            cpd = row.get('cpd', '?')
             tnum = row.get('trial_number', '?')
+            cpd = row.get('cpd', '?')
             side = row.get('side', '?')
-            color = "#4CAF50" if result == "PASS" else "#F44336"
-            text = f"#{tnum}  CPD:{cpd}  {side}  {result}"
-            item = QListWidgetItem(text)
-            item.setForeground(QColor(color))
+            self._trial_meta[str(tnum)] = (cpd, side)
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, float(row['start_norm']))
+            try:
+                item.setData(Qt.ItemDataRole.UserRole + 1, int(tnum))
+            except (ValueError, TypeError):
+                item.setData(Qt.ItemDataRole.UserRole + 1, tnum)
+            self._apply_trial_item(item, tnum, cpd, side, review)
             self.trial_list.addItem(item)
+
+    def _apply_trial_item(self, item, tnum, cpd, side, review):
+        s = str(side)[:1].upper() if side is not None else "?"
+        tr = (review or {}).get("trials", {}).get(str(tnum), {})
+        label = tr.get("label", "?")
+        auto = tr.get("auto_result", "")
+        mark = "✓" if tr.get("reviewed") else "·"  # ✓ / ·
+        item.setText(f"#{tnum}  {cpd}cpd {s}   {auto}→{label} {mark}")
+        item.setForeground(QColor(self.LABEL_COLORS.get(label, "#bbbbbb")))
+
+    def refresh_trial(self, tnum, review):
+        for i in range(self.trial_list.count()):
+            item = self.trial_list.item(i)
+            if str(item.data(Qt.ItemDataRole.UserRole + 1)) == str(tnum):
+                cpd, side = self._trial_meta.get(str(tnum), ('?', '?'))
+                self._apply_trial_item(item, tnum, cpd, side, review)
+                return
+
+    def current_trial_number(self):
+        item = self.trial_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole + 1) if item is not None else None
+
+    def set_review_state(self, review, progress):
+        self._suppress = True
+        try:
+            rec = (review or {}).get("record", {})
+            self.reviewer_edit.setText((review or {}).get("reviewer", ""))
+            self.record_note_edit.setText(rec.get("note", ""))
+            if rec.get("label", "keep") == "discard":
+                self.record_discard_btn.setChecked(True)
+            else:
+                self.record_keep_btn.setChecked(True)
+        finally:
+            self._suppress = False
+        self.set_progress(progress)
+        self.review_saved_lbl.setText("")
+
+    def set_progress(self, progress):
+        done, total = progress
+        self.review_progress_lbl.setText(f"Progress: {done} / {total} trials reviewed")
+
+    def set_saved(self, time_str):
+        if time_str:
+            self.review_saved_lbl.setText(f"● Saved {time_str}")
 
     def set_validity_summary(self, summary):
         """summary: {'sol': {'overall','trial','n'}, 'webcam': {...}} (from PlaybackEngine.validity_summary)."""
@@ -894,6 +1178,10 @@ class ReplayerApp(QMainWindow):
 
         # Engine
         self.engine = PlaybackEngine(self)
+
+        # Trial-follow state: highlight the trial the playhead is in (set on session load)
+        self._trial_start_norms = None
+        self._follow_trial_row = -1
 
         # Central widget
         central = QWidget()
@@ -962,6 +1250,10 @@ class ReplayerApp(QMainWindow):
         self.timeline.seek_requested.connect(self.engine.seek)
         self.config_panel.open_folder_requested.connect(self._open_session)
         self.config_panel.trial_selected.connect(self.engine.seek)
+        self.config_panel.reviewer_changed.connect(self._on_reviewer_changed)
+        self.config_panel.record_label_changed.connect(self._on_record_label_changed)
+        self.config_panel.record_note_changed.connect(self._on_record_note_changed)
+        self.config_panel.trial_label_set.connect(self._on_trial_label_set)
 
         # Video display widgets list for easy iteration
         self._displays = [self.screen_display, self.webcam_display, self.sol_display]
@@ -983,6 +1275,13 @@ class ReplayerApp(QMainWindow):
             lambda: self.engine.set_speed(self.engine.playback_speed - 0.25))
         QShortcut(QKeySequence(Qt.Key.Key_BracketRight), self).activated.connect(
             lambda: self.engine.set_speed(self.engine.playback_speed + 0.25))
+
+        # Review labeling: 1=pass 2=fail 3=discard (label current trial, auto-advance); N/B = next/prev trial
+        QShortcut(QKeySequence(Qt.Key.Key_1), self).activated.connect(lambda: self._on_trial_label_set("pass"))
+        QShortcut(QKeySequence(Qt.Key.Key_2), self).activated.connect(lambda: self._on_trial_label_set("fail"))
+        QShortcut(QKeySequence(Qt.Key.Key_3), self).activated.connect(lambda: self._on_trial_label_set("discard"))
+        QShortcut(QKeySequence(Qt.Key.Key_N), self).activated.connect(lambda: self._step_trial(1))
+        QShortcut(QKeySequence(Qt.Key.Key_B), self).activated.connect(lambda: self._step_trial(-1))
 
         # -- Stylesheet (dark theme) ----------------------------------------
         self.setStyleSheet("""
@@ -1026,16 +1325,21 @@ class ReplayerApp(QMainWindow):
         self.timeline.set_duration(self.engine.duration)
 
         # Populate trial markers on timeline and config list
+        self._trial_start_norms = None
+        self._follow_trial_row = -1
         if self.engine.trial_events_df is not None:
-            trials = []
-            for _, row in self.engine.trial_events_df.iterrows():
-                trials.append((
-                    row['start_norm'], row['end_norm'],
-                    row.get('result', '?'), row.get('trial_number', 0),
-                    row.get('cpd', 0),
-                ))
-            self.timeline.set_trials(trials)
-            self.config_panel.populate_trials(self.engine.trial_events_df)
+            self.timeline.set_trials(self._build_timeline_trials())
+            self.config_panel.populate_trials(self.engine.trial_events_df, self.engine.review)
+            try:
+                self._trial_start_norms = self.engine.trial_events_df['start_norm'].to_numpy(dtype=float)
+            except Exception:
+                self._trial_start_norms = None
+
+        # Scale screen-display gaze overlays from original screen res to the (downscaled) video
+        self.screen_display.set_gaze_source_size(self.engine.screen_width, self.engine.screen_height)
+
+        # Review labels (human-in-the-loop)
+        self.config_panel.set_review_state(self.engine.review, self.engine.review_progress())
 
         # Validity strips on the timeline + summary numbers in the side panel
         try:
@@ -1048,12 +1352,113 @@ class ReplayerApp(QMainWindow):
         # Force a frame update at t=0
         self.engine.time_changed.emit(0.0)
 
+    # -- Review labeling ----------------------------------------------------
+
+    def _build_timeline_trials(self):
+        """List of (start_norm, end_norm, result, trial_number, cpd, review_label) for the timeline."""
+        df = self.engine.trial_events_df
+        out = []
+        if df is None:
+            return out
+        rev = (self.engine.review or {}).get("trials", {})
+        for _, row in df.iterrows():
+            tnum = row.get('trial_number', 0)
+            label = rev.get(str(tnum), {}).get('label')
+            out.append((row['start_norm'], row['end_norm'], row.get('result', '?'),
+                        tnum, row.get('cpd', 0), label))
+        return out
+
+    def _row_for_tnum(self, tnum):
+        lst = self.config_panel.trial_list
+        for i in range(lst.count()):
+            if str(lst.item(i).data(Qt.ItemDataRole.UserRole + 1)) == str(tnum):
+                return i
+        return -1
+
+    def _trial_at_time(self, t):
+        df = self.engine.trial_events_df
+        if df is None:
+            return None
+        for _, row in df.iterrows():
+            if row['start_norm'] <= t <= row['end_norm']:
+                return row.get('trial_number')
+        return None
+
+    def _step_trial(self, delta):
+        """Select the next/previous trial row and seek to its start."""
+        lst = self.config_panel.trial_list
+        n = lst.count()
+        if n == 0:
+            return
+        cur = lst.currentRow()
+        nxt = 0 if cur < 0 else max(0, min(n - 1, cur + delta))
+        lst.setCurrentRow(nxt)
+        item = lst.item(nxt)
+        if item is not None:
+            seek = item.data(Qt.ItemDataRole.UserRole)
+            if seek is not None:
+                self.engine.seek(float(seek))
+
+    def _on_reviewer_changed(self, name):
+        self.config_panel.set_saved(self.engine.set_reviewer(name))
+
+    def _on_record_label_changed(self, label):
+        self.config_panel.set_saved(self.engine.set_record_label(label))
+
+    def _on_record_note_changed(self, note):
+        self.config_panel.set_saved(self.engine.set_record_note(note))
+
+    def _on_trial_label_set(self, label):
+        if not self.engine.review:
+            return
+        tnum = self.config_panel.current_trial_number()
+        if tnum is None:
+            tnum = self._trial_at_time(self.engine.master_clock)
+        if tnum is None:
+            if self.config_panel.trial_list.count() == 0:
+                return
+            self.config_panel.trial_list.setCurrentRow(0)
+            tnum = self.config_panel.current_trial_number()
+        # Make the labeled trial the current row (so auto-advance steps from it)
+        row = self._row_for_tnum(tnum)
+        if row >= 0:
+            self.config_panel.trial_list.setCurrentRow(row)
+        saved = self.engine.set_trial_label(tnum, label)
+        self.config_panel.refresh_trial(tnum, self.engine.review)
+        self.config_panel.set_progress(self.engine.review_progress())
+        self.config_panel.set_saved(saved)
+        self.timeline.set_trials(self._build_timeline_trials())  # recolor marker
+        self._step_trial(1)  # auto-advance to next trial
+
+    def _follow_playhead(self, t):
+        """Select the trial row the playhead is in (latest trial whose start <= t).
+        Uses setCurrentRow (no seek, no focus steal) and only updates on change so it
+        does not fight manual selection or text entry."""
+        starts = self._trial_start_norms
+        if starts is None or len(starts) == 0:
+            return
+        idx = int(np.searchsorted(starts, t, side='right') - 1)  # -1 before the first trial
+        if idx == self._follow_trial_row:
+            return
+        self._follow_trial_row = idx
+        if idx < 0:
+            return
+        lst = self.config_panel.trial_list
+        if 0 <= idx < lst.count():
+            lst.setCurrentRow(idx)
+            item = lst.item(idx)
+            if item is not None:
+                lst.scrollToItem(item)
+
     # -- Per-tick update ----------------------------------------------------
 
     def _on_time_changed(self, t: float):
         # Update transport time display
         self.transport.update_time(t, self.engine.duration)
         self.timeline.set_time(t)
+
+        # Highlight the trial the playhead is currently in (follow playback)
+        self._follow_playhead(t)
 
         # Fetch gaze data once
         gaze_data = self.engine.get_data_at_time(t)

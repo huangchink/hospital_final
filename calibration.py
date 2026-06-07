@@ -18,9 +18,17 @@ from gazefollower.logger import Log as GFLog
 from gazefollower.camera import WebCamCamera
 
 
+# Base dir for writable/user data. When frozen by PyInstaller, __file__ is inside the
+# bundle, so anchor to the .exe's folder instead (dev behaviour unchanged).
+if getattr(sys, "frozen", False):
+    APP_DIR = Path(sys.executable).resolve().parent
+else:
+    APP_DIR = Path(__file__).resolve().parent
+
+
 # --------- 固定命名規則：calibration_profiles/<user>_<pts>pt ---------
 def _profile_dir(user_name: str, pts: int, W: int, H: int) -> Path:
-    project_root = Path(__file__).resolve().parent
+    project_root = APP_DIR
     base = project_root / "calibration_profiles"
     base.mkdir(parents=True, exist_ok=True)
     name = (user_name or "default").strip().replace(" ", "_")
@@ -89,7 +97,7 @@ class CalibGUI(tk.Tk):
         self.camera_idx = tk.StringVar(value="0")
 
         # 預設校正圖片資料夾
-        default_cali_dir = Path(__file__).resolve().parent / "校正圖片選擇"
+        default_cali_dir = APP_DIR / "校正圖片選擇"
 
         # 可選：自訂校正標靶圖與尺寸
         self.cali_img_path = tk.StringVar(value=str(default_cali_dir))
@@ -169,7 +177,7 @@ def main():
     logging.basicConfig(level=logging.INFO)
 
     # 初始化 gazefollower 的 logger（一定要先呼叫）
-    logs = Path(__file__).resolve().parent / "logs"
+    logs = APP_DIR / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     GFLog.init(str(logs / f"gazefollower_{time.strftime('%Y%m%d_%H%M%S')}.log"))
 

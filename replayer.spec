@@ -1,34 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec file for replayer.py
+PyInstaller spec file for replayer.py (PyQt6 session replayer).
 To build: python -m PyInstaller --clean -y replayer.spec
-"""
 
-import sys
-import os
+Note: unlike VA_center_opt / calibration, replayer does NOT use mediapipe or MNN, so it
+does NOT use pyinstaller_helpers.patch_dll_discovery() (that workaround skips PyInstaller's
+DLL-dependency discovery, which would leave PyQt6's Qt6*.dll unbundled -> "DLL load failed
+while importing QtWidgets"). Here we keep normal discovery and collect PyQt6 explicitly.
+UPX is disabled because it can corrupt the Qt6 DLLs and cause the same load failure.
+"""
+from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
 
-# --- Apply workarounds (must be before Analysis) ---
-import pyinstaller_helpers
-pyinstaller_helpers.patch_dll_discovery()
+datas, binaries, hiddenimports = [], [], ['cv2', 'numpy', 'pandas']
 
-# ===================== Hidden imports =====================
-hiddenimports = [
-    'cv2',
-    'numpy',
-    'pandas',
-    'tkinter',
-    'tkinter.filedialog',
-    'tkinter.messagebox',
-]
+# Bundle PyQt6 (Qt6 DLLs + plugins + bindings) explicitly.
+_d, _b, _h = collect_all('PyQt6')
+datas += _d
+binaries += _b
+hiddenimports += _h
 
-# ===================== Binaries (manual DLL inclusion) =====================
-# Replayer only needs numpy/pandas/cv2, but we use the same helper for consistency
-binaries = pyinstaller_helpers.collect_manual_binaries()
-datas = pyinstaller_helpers.collect_manual_datas()
-
-# ===================== Analysis =====================
 a = Analysis(
     ['replayer.py'],
     pathex=[],
@@ -39,7 +31,7 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=['IPython', 'jupyter', 'matplotlib', 'scipy', 'mediapipe', 'PIL',
-              'MNN', '_mnncengine'],
+              'MNN', '_mnncengine', 'tkinter', 'pygame', 'ganzin', 'gazefollower'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -57,7 +49,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -73,7 +65,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='replayer',
 )

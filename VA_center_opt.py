@@ -25,6 +25,14 @@ import tkinter as tk
 from tkinter import ttk, colorchooser, filedialog, messagebox
 from pathlib import Path
 
+# Base directory for writable user data (settings, calibration profiles, output, logs).
+# When frozen by PyInstaller, __file__ points inside the bundle, so anchor to the .exe
+# directory instead; otherwise use the script's own directory (unchanged dev behaviour).
+if getattr(sys, "frozen", False):
+    APP_DIR = Path(sys.executable).resolve().parent
+else:
+    APP_DIR = Path(__file__).resolve().parent
+
 
 # [FIX] Windows keyboard layout management - switch to English to ensure
 # keystroke-based controls (q, SPACE, etc.) work regardless of IME state.
@@ -33,7 +41,7 @@ class KeyboardLayoutManager:
     """Cache current keyboard layout, switch to English, restore on exit.
     Saves original layout to a file so it can be recovered after a native crash."""
     EN_US_LAYOUT = 0x0409
-    _RECOVERY_FILE = Path(__file__).resolve().parent / ".kb_layout_backup"
+    _RECOVERY_FILE = APP_DIR / ".kb_layout_backup"
 
     def __init__(self):
         self._original_layout = None
@@ -171,7 +179,7 @@ try:
 except ImportError:
     print("Warning: PIL or mediapipe not found. Webcam Preview might fail.")
 
-LAST_SETTINGS_FILE = Path(__file__).resolve().parent / "VA_output" / "last_settings_opt.json"
+LAST_SETTINGS_FILE = APP_DIR / "VA_output" / "last_settings_opt.json"
 
 # [NEW] Global Crash Handler
 def global_exception_handler(exctype, value, tb):
@@ -1389,7 +1397,7 @@ class SettingsWindow(tk.Tk):
         ENTRY_FONT = ("Arial", font_size)
 
         # 預設校正資料夾
-        self.default_calib_dir = Path(__file__).resolve().parent / "calibration_profiles"
+        self.default_calib_dir = APP_DIR / "calibration_profiles"
         self.default_calib_dir.mkdir(parents=True, exist_ok=True)
         self.calib_dir_var = tk.StringVar(value=str(self.default_calib_dir))
 
@@ -3453,7 +3461,7 @@ Controls: SPACE = Record point, Q = Cancel"""
         calib_dir = self.calib_dir_var.get().strip()
         calib_path = Path(calib_dir) if calib_dir else None
         if not calib_path or not calib_path.exists() or not (calib_path / "svr_x.xml").exists():
-            default_profile = Path(__file__).resolve().parent / "calibration_profiles" / "anonymous_9pt"
+            default_profile = APP_DIR / "calibration_profiles" / "anonymous_9pt"
             if default_profile.exists() and (default_profile / "svr_x.xml").exists():
                 calib_path = default_profile
                 print(f"[Webcam Preview] Using default calibration profile: {default_profile}")
@@ -3761,7 +3769,7 @@ Controls: SPACE = Record point, Q = Cancel"""
             calib_path = Path(calib_dir) if calib_dir else None
             if not calib_path or not calib_path.exists() or not (calib_path / "svr_x.xml").exists():
                 # Fallback to default anonymous_9pt profile
-                default_profile = Path(__file__).resolve().parent / "calibration_profiles" / "anonymous_9pt"
+                default_profile = APP_DIR / "calibration_profiles" / "anonymous_9pt"
                 if default_profile.exists() and (default_profile / "svr_x.xml").exists():
                     self.calib_dir_var.set(str(default_profile))
                     print(f"[Webcam] Using default calibration profile: {default_profile}")
@@ -6298,7 +6306,7 @@ if __name__ == '__main__':
 
     # [FIX] Init GazeFollower Logger
     try:
-        log_dir = Path(__file__).resolve().parent / "logs"
+        log_dir = APP_DIR / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         import time as _time
         log_file = log_dir / f"gazefollower_{_time.strftime('%Y%m%d_%H%M%S')}.log"

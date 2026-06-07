@@ -5,30 +5,13 @@ gazefollower.logging = logging
 import gazefollower.face_alignment.MediaPipeFaceAlignment as mpa
 mpa.logging = logging
 
-import os
-import cv2
-import pygame
-import numpy as np
-import time
 import sys
-import math
-import random
-import threading
-import queue
-import asyncio
-import json
-import csv
-import traceback
 import ctypes
-from collections import deque
-import tkinter as tk
-from tkinter import ttk, colorchooser, filedialog, messagebox
-from pathlib import Path
+import threading
+import pygame
+from tkinter import messagebox
 
-# Base directory for writable user data (settings, calibration profiles, output, logs).
-# When frozen by PyInstaller, __file__ points inside the bundle, so anchor to the .exe
-# directory instead; otherwise use the script's own directory (unchanged dev behaviour).
-from ntuh.common.app_env import APP_DIR, LAST_SETTINGS_FILE
+from ntuh.common.app_env import APP_DIR
 
 
 # [FIX] Windows keyboard layout management - switch to English to ensure
@@ -109,57 +92,8 @@ class KeyboardLayoutManager:
             except Exception:
                 pass
 
-from gazefollower import GazeFollower
-from gazefollower.misc import DefaultConfig
-from gazefollower.calibration import SVRCalibration
 from gazefollower.logger import Log as GFLog
-from gazefollower.camera import WebCamCamera
 
-# [NEW] Imports for Sol Glasses & Recorder
-try:
-    from sol_tracker import SolConnector, ScreenProjector3D, create_calibration_assets, SDK_AVAILABLE
-except ImportError:
-    SDK_AVAILABLE = False
-    print("Warning: sol_tracker module not found or dependencies missing (ganzin_sol_sdk). Sol features disabled.")
-
-# [NEW] Sol Offset Calibration (3D angular offset)
-try:
-    from sol_offset_calibration import (
-        apply_angular_offset, load_sol_offset, save_sol_offset, clear_sol_offset,
-        SolOffsetCalibrator
-    )
-    SOL_OFFSET_AVAILABLE = True
-except ImportError:
-    SOL_OFFSET_AVAILABLE = False
-    print("Warning: sol_offset_calibration module not found. Sol offset calibration disabled.")
-
-# [NEW] Sol 2D Offset Calibration (IDW-based with angular support)
-try:
-    from sol_2d_offset_calibration import (
-        Sol2DOffsetCalibrator, Sol2DOffsetModel,
-        load_sol_2d_offset, save_sol_2d_offset, clear_sol_2d_offset,
-        CALIBRATION_POSITIONS_2D, compute_safe_calibration_positions,
-        OFFSET_MODE_PIXEL, OFFSET_MODE_ANGULAR  # Offset modes
-    )
-    SOL_2D_OFFSET_AVAILABLE = True
-except ImportError:
-    SOL_2D_OFFSET_AVAILABLE = False
-    OFFSET_MODE_PIXEL = 'pixel'
-    OFFSET_MODE_ANGULAR = 'angular'
-    print("Warning: sol_2d_offset_calibration module not found. Sol 2D offset calibration disabled.")
-
-from recorder import Recorder
-
-
-# DummyRecorder moved to recorder.py (alongside Recorder)
-# [NEW] Imports for Webcam Preview
-try:
-    from PIL import Image, ImageTk
-    import mediapipe as mp
-except ImportError:
-    print("Warning: PIL or mediapipe not found. Webcam Preview might fail.")
-
-# LAST_SETTINGS_FILE now imported from ntuh.common.app_env (top of file).
 
 # [NEW] Global Crash Handler
 def global_exception_handler(exctype, value, tb):
@@ -178,65 +112,12 @@ def global_exception_handler(exctype, value, tb):
 sys.excepthook = global_exception_handler
 threading.excepthook = lambda args: global_exception_handler(args.exc_type, args.exc_value, args.exc_traceback)
 
-from ntuh.vavf.stimuli import (
-    get_va_result_cpd, DO_BLUR, BLUR_KSIZE, BLUR_SIGMA,
-    VF_ANGULAR_DIAMETERS, VF_PASS_DWELL_SEC, VF_TIMEOUT_SEC,
-    vf_angular_to_pixel_diameter, vf_get_quadrant, vf_generate_points,
-    vf_convert_positions_to_pixels, prepare_patch_grid,
-    generate_grating_oriented_patch, Staircase,
-)
-
-# Monitor enumeration + tester-rect moved to ntuh.common.win_monitors.
-from ntuh.common.win_monitors import get_monitor_info_windows, resolve_tester_rect
-
-
-# Pygame input/focus helpers moved to ntuh.common.pygame_utils.
-from ntuh.common.pygame_utils import restore_event_filter, ensure_pygame_focus
-
-from ntuh.common.optics import (
-    to_rgb_tuple, screen_width_deg_from_cm, px_to_cm, cm_to_px, mean_color_rgb,
-)
-
-# VF geometry, VA gratings and the Staircase moved to ntuh.vavf.stimuli (imported above).
-
-# Sol/webcam gaze-quality accounting + DashboardState moved to ntuh.tracking.sol_quality.
-from ntuh.tracking.sol_quality import (
-    sol_sample_is_valid, _sol_eye_valid, _ValidityCounter, SolQualityTracker,
-    build_quality_summary, build_summary_lines, DashboardState,
-)
-
-
-# Webcam face-quality overlay moved to ntuh.ui.face_overlay (shared by preview + dashboard).
-from ntuh.ui.face_overlay import (
-    draw_face_quality_overlay, guide_kwargs_from_cfg, _quality_color, _put_text,
-    _Q_GREEN, _Q_RED, _Q_YELLOW, _Q_GRAY, _Q_WHITE,
-    _GUIDE_OVAL_SIZE_FRAC, _GUIDE_OVAL_BOTTOM_X_FRAC, _GUIDE_OVAL_BOTTOM_Y_FRAC,
-)
-
-
-# Tester dashboard moved to ntuh.ui.tester_dashboard.
-from ntuh.ui.tester_dashboard import TesterDashboard
-
-
-# resolve_tester_rect moved to ntuh.common.win_monitors (imported above).
-
-
-# Webcam-preview Camera + ScrollableFrame moved to ntuh.ui.widgets.
-from ntuh.ui.widgets import Camera, ScrollableFrame
-
-
-# SettingsWindow moved to ntuh.ui.settings_window.
+# All experiment logic now lives in the ntuh package.
 from ntuh.ui.settings_window import SettingsWindow
-
-# ---------- Sol Thread Helper ----------
-# run_sol_worker moved to ntuh.tracking.sol_session
-from ntuh.tracking.sol_session import run_sol_worker
-# ---------- VF Experiment ----------
-# run_vf_test moved to ntuh.flows.vf_test
-from ntuh.flows.vf_test import run_vf_test
-# ---------- VA Experiment ----------
-# run_test moved to ntuh.flows.va_test
 from ntuh.flows.va_test import run_test
+from ntuh.flows.vf_test import run_vf_test
+
+
 if __name__ == '__main__':
     # [FIX] Enable faulthandler to get stack traces on segfaults/native crashes
     import faulthandler

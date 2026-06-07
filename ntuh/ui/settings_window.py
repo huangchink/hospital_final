@@ -1958,6 +1958,30 @@ Controls: SPACE = Record point, Q = Cancel"""
                     _cv = cv2.cvtColor(_cv, cv2.COLOR_BGR2RGB)
                 static_bg.blit(pygame.image.frombuffer(_cv.tobytes(), _cv.shape[1::-1], "RGB"), (_pos[0], _pos[1]))
 
+        # [Crash mitigation v2] Duty-cycle the scene stream instead of decoding it continuously.
+        # Sustained scene H.264 decode intermittently triggers an UNCATCHABLE native libavcodec
+        # crash inside the SDK's handle_video_packet. The VA/VF test never hits it because it pauses
+        # the scene stream after ArUco warm-up; the preview used to stream nonstop. So: keep the
+        # scene stream on only long enough to (re)acquire the homography, then pause it and render
+        # gaze on the frozen/cached homography. Re-acquire in short bursts periodically or on 'R'.
+        SCENE_BURST_MAX = 10.0       # hard cap on one acquisition burst (s) - matches test warm-up
+        SCENE_REFRESH_EVERY = 30.0   # auto re-acquire interval once a homography is held (s)
+        SCENE_RETRY_EVERY = 3.0      # faster retry while no homography acquired yet (s)
+        scene_streaming = bool(self.active_sol_connector)  # resumed above for the first burst
+        burst_start = time.time()
+        last_pause_time = 0.0
+        reacquire_requested = False
+
+        def _homography_live():
+            # True while markers are actively detected (a fresh homography this burst).
+            return (sol_projector.is_homography_valid(strict=True)
+                    if self.sol_gaze_method_var.get() == "2D" else sol_projector.is_calibrated())
+
+        def _homography_held():
+            # True if any homography (incl. frozen/cached) is available to render gaze on.
+            return (sol_projector.is_homography_valid(strict=False)
+                    if self.sol_gaze_method_var.get() == "2D" else sol_projector.is_calibrated())
+
         print("[Sol Preview] Entering main loop...")
         try:
             while running:
@@ -1980,6 +2004,8 @@ Controls: SPACE = Record point, Q = Cancel"""
                         elif ev.type == pygame.KEYDOWN:
                             if ev.key in (pygame.K_q, pygame.K_ESCAPE):
                                 running = False
+                            elif ev.key == pygame.K_r:
+                                reacquire_requested = True  # operator-requested homography refresh
 
                     # Get gaze data (limit to 20 items to prevent delays)
                     for _ in range(20):
@@ -2014,6 +2040,25 @@ Controls: SPACE = Record point, Q = Cancel"""
                         if now_t - last_pose_submit >= POSE_SUBMIT_INTERVAL:
                             sol_projector.submit_frame_for_pose(latest_frame_numpy)
                             last_pose_submit = now_t
+
+                    # --- Scene-stream duty cycle (native-crash mitigation) ---
+                    # Stream only long enough to (re)acquire the homography, then pause and render
+                    # gaze on the frozen homography; re-acquire in short bursts (auto or on 'R').
+                    now_dc = time.time()
+                    if scene_streaming:
+                        if _homography_live() or (now_dc - burst_start) >= SCENE_BURST_MAX:
+                            if self.active_sol_connector:
+                                self.active_sol_connector.pause_scene_stream()
+                            scene_streaming = False
+                            last_pause_time = now_dc
+                    else:
+                        interval = SCENE_REFRESH_EVERY if _homography_held() else SCENE_RETRY_EVERY
+                        if reacquire_requested or (now_dc - last_pause_time) >= interval:
+                            if self.active_sol_connector:
+                                self.active_sol_connector.resume_scene_stream()
+                            scene_streaming = True
+                            burst_start = now_dc
+                            reacquire_requested = False
 
                     # Process gaze based on selected method
                     gaze_method = self.sol_gaze_method_var.get()
@@ -2119,7 +2164,8 @@ Controls: SPACE = Record point, Q = Cancel"""
                     else:
                         aruco_status = "WAITING"
                         aruco_color = (255, 100, 100)
-                    status_text = f"Method: {gaze_method} | Homography: {aruco_status} | Gaze: {'OK' if current_gaze_pt else 'N/A'} | Press Q/ESC to exit"
+                    scene_label = "streaming" if scene_streaming else "paused"
+                    status_text = f"Method: {gaze_method} | Homography: {aruco_status} | Scene: {scene_label} | Gaze: {'OK' if current_gaze_pt else 'N/A'} | R=refresh  Q/ESC=exit"
 
                     pygame.draw.rect(win, (0, 0, 0), (0, screen_h - 50, screen_w, 50))
                     text_surf = font.render(status_text, True, (255, 255, 255))

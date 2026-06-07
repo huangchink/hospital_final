@@ -93,7 +93,7 @@ Example: User "edan" with 9 points creates `calibration/calibration_profiles/eda
 
 ## Included Calibration Images
 
-The `校正圖片選擇/` folder (next to `calibration.exe`) contains optional target images. You
+The `calibration_images/` folder (next to `calibration.exe`) contains optional target images. You
 can drop your own images into this folder to use them as calibration targets.
 
 ## Tips

@@ -38,10 +38,10 @@ _internal\). In each program folder you will find:
         VA_output\             test recordings (one timestamped folder/session)
         calibration_profiles\  calibration profiles it reads
         logs\
-        刺激源圖片選擇\         stimulus images (e.g. ball.jpg)
+        stimulus_images\        stimulus images (e.g. ball.jpg)
     calibration\
         calibration_profiles\  profiles it creates
-        校正圖片選擇\           calibration target images
+        calibration_images\     calibration target images
         logs\
 
 IMPORTANT - sharing calibration profiles between the two programs:

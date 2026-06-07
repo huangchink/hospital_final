@@ -97,7 +97,7 @@ class CalibGUI(tk.Tk):
         self.camera_idx = tk.StringVar(value="0")
 
         # 預設校正圖片資料夾
-        default_cali_dir = APP_DIR / "校正圖片選擇"
+        default_cali_dir = APP_DIR / "calibration_images"
 
         # 可選：自訂校正標靶圖與尺寸
         self.cali_img_path = tk.StringVar(value=str(default_cali_dir))

@@ -1495,7 +1495,7 @@ class SettingsWindow(tk.Tk):
         self.vf_bg_color_var = tk.StringVar(value="0,0,0")
 
         # [NEW] Sol Offset Calibration Vars
-        self.sol_offset_target_img_var = tk.StringVar(value="刺激源圖片選擇/ball.jpg")
+        self.sol_offset_target_img_var = tk.StringVar(value="stimulus_images/ball.jpg")
         self.sol_offset_target_size_var = tk.StringVar(value="100")
         self.sol_offset_num_points_var = tk.StringVar(value="5")
         self.sol_offset_user_screen_var = tk.StringVar(value="0")

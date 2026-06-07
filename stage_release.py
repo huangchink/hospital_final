@@ -23,11 +23,11 @@ DIST = os.path.join(ROOT, "dist")
 #   make_dirs  : writable folders to create empty
 PLAN = {
     "VA_center_opt": {
-        "copy_dirs": [os.path.join("calibration_profiles", "anonymous_9pt"), "刺激源圖片選擇"],
+        "copy_dirs": [os.path.join("calibration_profiles", "anonymous_9pt"), "stimulus_images"],
         "make_dirs": ["VA_output", "logs"],
     },
     "calibration": {
-        "copy_dirs": [os.path.join("calibration_profiles", "anonymous_9pt"), "校正圖片選擇"],
+        "copy_dirs": [os.path.join("calibration_profiles", "anonymous_9pt"), "calibration_images"],
         "make_dirs": ["calibration_profiles", "logs"],
     },
     "replayer": {  # reads session folders the user opens; nothing to stage

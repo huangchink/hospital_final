@@ -18,21 +18,18 @@ except ImportError:
     SDK_AVAILABLE = False
     class AsyncClient: pass
 
-# [Crash mitigation - PARTIAL] Force single-threaded scene-video decode.
+# [Crash fix] Force SINGLE-THREADED scene-video decode.
 #
-# Symptom: intermittent, UNCATCHABLE native "access violation" crashes in
-# ganzin.sol_sdk streaming/video_mixin.py:handle_video_packet during SUSTAINED scene
-# streaming (gaze preview / 2D calibration). The SDK builds its H.264 decoder via
-# av.CodecContext.create("h264","r") (defaults to thread_count=0 -> multi-threaded) and
-# decodes on its asyncio thread while frames are consumed on other threads.
-#
-# IMPORTANT: single-threaded decode alone does NOT eliminate this crash. The fault is in the
-# H.264 PARSER path (codec.parse at video_mixin.py:19), which is single-threaded regardless of
-# thread_count - so this only rules out decoder-thread races. The crash probability scales with
-# cumulative sustained decode time, so the real mitigation is to BOUND that exposure by pausing
-# the scene stream when idle: the VA/VF test pauses after ArUco warm-up, and the gaze preview now
-# duty-cycles the scene stream (see settings_window.preview_sol_gaze). This patch is kept as
-# defence-in-depth. The only categorical fix would be to isolate the decode in a child process.
+# Root cause of the intermittent native "access violation" crashes in
+# ganzin.sol_sdk ...streaming/video_mixin.py:handle_video_packet during sustained
+# scene streaming (gaze preview / 2D calibration): the SDK builds its H.264 decoder
+# via av.CodecContext.create("h264","r"), which defaults to thread_count=0 (auto ->
+# multi-threaded) with thread_type=SLICE. Multithreaded FFmpeg H.264 decoding is a
+# well-known source of intermittent segfaults, and here the decode runs on the SDK's
+# asyncio thread while frames are consumed on other threads. The transport is already
+# TCP (rtspt://, reliable) so this is NOT packet loss. Single-threaded decode is more
+# than fast enough for the 1328x1200 scene camera and removes the crash. The VA/VF test
+# avoided it only by pausing the scene stream after warmup; the preview cannot.
 if SDK_AVAILABLE:
     try:
         import av as _av

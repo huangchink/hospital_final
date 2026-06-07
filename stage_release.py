@@ -21,26 +21,29 @@ DIST = os.path.join(ROOT, "dist")
 # What each built app needs staged next to its .exe.
 #   copy_dirs  : source dir (repo-relative) -> copied preserving its relative path
 #   make_dirs  : writable folders to create empty
-#   copy_files : doc files (repo-relative) -> copied flat into the app folder so the
-#                professor (who only sees the built folder) can read how to use it
-RELEASE_NOTE = os.path.join("doc", "20260607_release_note.txt")
 PLAN = {
     "VA_center_opt": {
         "copy_dirs": [os.path.join("calibration_profiles", "anonymous_9pt"), "刺激源圖片選擇"],
         "make_dirs": ["VA_output", "logs"],
-        "copy_files": [os.path.join("doc", "VA_center_opt.md"), RELEASE_NOTE],
     },
     "calibration": {
         "copy_dirs": [os.path.join("calibration_profiles", "anonymous_9pt"), "校正圖片選擇"],
         "make_dirs": ["calibration_profiles", "logs"],
-        "copy_files": [os.path.join("doc", "calibration.md"), RELEASE_NOTE],
     },
     "replayer": {  # reads session folders the user opens; nothing to stage
         "copy_dirs": [],
         "make_dirs": [],
-        "copy_files": [os.path.join("doc", "replayer.md"), RELEASE_NOTE],
     },
 }
+
+# User-facing documentation, gathered into dist\manual\ so the professor has one
+# place to read how to use each program (the .exe folders stay clean).
+MANUAL_DOCS = [
+    os.path.join("doc", "20260607_release_note.txt"),
+    os.path.join("doc", "VA_center_opt.md"),
+    os.path.join("doc", "calibration.md"),
+    os.path.join("doc", "replayer.md"),
+]
 
 LAUNCHER = """@echo off
 echo ========================================
@@ -82,17 +85,21 @@ def main():
         for d in cfg["make_dirs"]:
             os.makedirs(os.path.join(app_dir, d), exist_ok=True)
 
-        for rel in cfg.get("copy_files", []):
-            src = os.path.join(ROOT, rel)
-            if os.path.exists(src):
-                shutil.copy2(src, os.path.join(app_dir, os.path.basename(src)))
-                print(f"    staged {os.path.basename(src)}")
-            else:
-                print(f"    skip (missing): {rel}")
-
         with open(os.path.join(app_dir, "run_debug.bat"), "w", encoding="utf-8") as f:
             f.write(LAUNCHER.format(exe=app + ".exe"))
         print("    wrote run_debug.bat")
+
+    # Documentation -> dist\manual\
+    manual_dir = os.path.join(DIST, "manual")
+    os.makedirs(manual_dir, exist_ok=True)
+    print(f"[manual] staging -> dist\\manual\\")
+    for rel in MANUAL_DOCS:
+        src = os.path.join(ROOT, rel)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(manual_dir, os.path.basename(src)))
+            print(f"    staged {os.path.basename(src)}")
+        else:
+            print(f"    skip (missing): {rel}")
 
     print("Staging complete.")
     return 0

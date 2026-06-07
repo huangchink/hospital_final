@@ -68,6 +68,7 @@ VA_center_opt
     "WAITING FOR STABLE VALID DATA" shows until the enabled trackers are good.
   - Webcam preview: green / red boxes on the face and each eye, plus a face-oval
     centering guide with OK / TOO CLOSE / TOO FAR hints (about 60 cm target).
+    - Tester can adjust the position/size of the oval for different experimental settings.
   - "Verify Gaze" webcam preview: gray screen with 5 targets and a live gaze dot.
   - Steadier Sol gaze: the scene->screen homography now stays frozen while the
     head is still and only updates for real movement (no per-frame jitter), and
@@ -75,7 +76,6 @@ VA_center_opt
   - Fixed an intermittent native crash during Sol streaming.
   - Screen recording is downscaled to 1080p on 2K / 4K screens (avoids dropped
     frames); the replayer scales gaze overlays to match.
-  - "left eye" / "right eye" always mean the participant's actual left / right eye.
   - New per-session files: sol_quality_metrics.json, webcam_quality.csv,
     screen_meta.json.
 

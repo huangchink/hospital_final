@@ -74,6 +74,12 @@ try:
 except Exception:
     pass
 
+# Shared NTUH library (extracted from this script during the reorg)
+try:
+    hiddenimports += collect_submodules('ntuh')
+except Exception:
+    pass
+
 # ===================== Data files =====================
 datas = []
 try:

@@ -830,29 +830,44 @@ class ScreenProjector3D:
                 return None
             return self.image_to_screen_homography.copy()
 
-    def set_homography(self, H):
+    def set_homography(self, H, valid=True):
         """
         Set the image-to-screen homography matrix externally.
 
-        This is useful for restoring a previously computed homography,
-        e.g., when starting a calibration session after a preview.
+        Used to (a) restore a cached homography when starting calibration after a preview, and
+        (b) drive a lightweight parent-side projector from the isolated Sol child's IPC homography
+        updates. The `valid` flag carries the child's "markers currently active" state so the
+        parent's is_homography_valid(strict=True) reports LIVE vs CACHED truthfully (default True
+        keeps all existing in-process callers unchanged).
 
         Args:
             H: 3x3 numpy array, or None to clear
+            valid: whether markers are currently being detected (homography is LIVE)
         """
         with self.pose_lock:
             self._homography_conflict_count = 0
             self._homography_conflict_start = None
             if H is not None:
                 self.image_to_screen_homography = H.copy()
-                self.homography_valid = True
+                self.homography_valid = bool(valid)
                 self.homography_from_cache = True  # Mark as restored from cache
                 self.last_homography_update_time = time.time()
-                print(f"[ScreenProjector3D] External homography set")
             else:
                 self.image_to_screen_homography = None
                 self.homography_valid = False
                 self.homography_from_cache = False
+
+    def set_pose(self, rvec, tvec, valid=True):
+        """Set the screen pose (rvec/tvec) externally - drives a lightweight parent-side projector
+        from the isolated child's IPC pose updates (3D gaze mapping). Mirrors set_homography; all
+        real pose computation (solvePnP + EMA) stays in the child's _update_pose_internal."""
+        with self.pose_lock:
+            if valid and rvec is not None and tvec is not None:
+                self.smoothed_rvec = np.asarray(rvec, dtype=float)
+                self.smoothed_tvec = np.asarray(tvec, dtype=float)
+                self.is_pose_valid = True
+            else:
+                self.is_pose_valid = False
 
     def get_screen_to_image_homography(self):
         """

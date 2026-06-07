@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
-import logging
-import gazefollower
-gazefollower.logging = logging
-import gazefollower.face_alignment.MediaPipeFaceAlignment as mpa
-mpa.logging = logging
+"""VA/VF stimulus suite entry point.
 
+Kept import-light at module top level on purpose: the isolated Sol scene worker uses
+multiprocessing 'spawn', which re-imports this module as __mp_main__ in the child. If the
+heavy GUI/SDK imports (pygame, tkinter, gazefollower, MediaPipe) ran at import time they
+would load into every child process. So ALL heavy imports + the global excepthook installs
++ the GUI lifecycle live inside main(), under the __main__ guard. Top level keeps only
+stdlib (sys, ctypes, multiprocessing) and the stdlib-only APP_DIR.
+"""
 import sys
 import ctypes
-import threading
-import pygame
-from tkinter import messagebox
+import multiprocessing
 
 from ntuh.common.app_env import APP_DIR
 
@@ -92,10 +93,9 @@ class KeyboardLayoutManager:
             except Exception:
                 pass
 
-from gazefollower.logger import Log as GFLog
 
-
-# [NEW] Global Crash Handler
+# [NEW] Global Crash Handler. tkinter is imported lazily inside so this module stays
+# import-light for spawned children (which must not load tk).
 def global_exception_handler(exctype, value, tb):
     import traceback
     from datetime import datetime
@@ -106,40 +106,54 @@ def global_exception_handler(exctype, value, tb):
     try:
         with open("va_crash_log.txt", "a") as f:
             f.write(full_msg + "\n" + "="*40 + "\n")
+        from tkinter import messagebox
         messagebox.showerror("Critical Error", f"Application Crashed!\nSee va_crash_log.txt\n\n{value}")
-    except: pass
-
-sys.excepthook = global_exception_handler
-threading.excepthook = lambda args: global_exception_handler(args.exc_type, args.exc_value, args.exc_traceback)
-
-# All experiment logic now lives in the ntuh package.
-from ntuh.ui.settings_window import SettingsWindow
-from ntuh.flows.va_test import run_test
-from ntuh.flows.vf_test import run_vf_test
+    except Exception:
+        pass
 
 
-if __name__ == '__main__':
-    # [FIX] Enable faulthandler to get stack traces on segfaults/native crashes
+def main():
+    # Heavy imports live here (NOT at module top) so a multiprocessing 'spawn' child that
+    # re-imports this module as __mp_main__ does not load pygame/tk/mediapipe/gazefollower.
+    import atexit
     import faulthandler
+    import threading
+    import time as _time
+    import logging
+    import pygame
+    from tkinter import messagebox
+    import gazefollower
+    gazefollower.logging = logging
+    import gazefollower.face_alignment.MediaPipeFaceAlignment as mpa
+    mpa.logging = logging
+    from gazefollower.logger import Log as GFLog
+    from ntuh.ui.settings_window import SettingsWindow
+    from ntuh.flows.va_test import run_test
+    from ntuh.flows.vf_test import run_vf_test
+
+    # [FIX] Enable faulthandler to get stack traces on segfaults/native crashes
     faulthandler.enable()
+
+    # Install global crash handlers (here, not at import time)
+    sys.excepthook = global_exception_handler
+    threading.excepthook = lambda args: global_exception_handler(args.exc_type, args.exc_value, args.exc_traceback)
 
     # [FIX] DPI Awareness
     try:
         ctypes.windll.user32.SetProcessDPIAware()
-    except: pass
+    except Exception:
+        pass
 
     # [FIX] Switch keyboard to English so keystroke controls (q, SPACE, etc.) work
     kb_manager = KeyboardLayoutManager()
     kb_manager.switch_to_english()
     # Register atexit to guarantee restore even on crashes or sys.exit()
-    import atexit
     atexit.register(kb_manager.restore)
 
     # [FIX] Init GazeFollower Logger
     try:
         log_dir = APP_DIR / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        import time as _time
         log_file = log_dir / f"gazefollower_{_time.strftime('%Y%m%d_%H%M%S')}.log"
         GFLog.init(str(log_file))
     except Exception as e:
@@ -208,3 +222,8 @@ if __name__ == '__main__':
 
     # [FIX] Restore original keyboard layout on exit
     kb_manager.restore()
+
+
+if __name__ == '__main__':
+    multiprocessing.freeze_support()  # MUST be first (frozen-build child bootstrap)
+    main()

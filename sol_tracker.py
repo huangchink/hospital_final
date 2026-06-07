@@ -681,12 +681,6 @@ class ScreenProjector3D:
             
         return gaze_origin_m + t * gaze_direction_unit
 
-    def map_3d_to_2d_pixel(self, point_3d, H):
-        # Legacy method support if H is passed, but we prefer rvec/tvec
-        # This is a placeholder or we can implement if we know what H is.
-        # But given the refactoring plan, we will add a new robust method.
-        pass
-
     def camera_point_to_screen_pixels(self, point_camera_m, rvec, tvec, screen_width_px, screen_width_m):
         """
         Convert a 3D point in Camera Frame to Screen Pixels using provided pose (rvec, tvec).

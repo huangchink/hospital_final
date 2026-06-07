@@ -141,7 +141,6 @@ try:
     from sol_2d_offset_calibration import (
         Sol2DOffsetCalibrator, Sol2DOffsetModel,
         load_sol_2d_offset, save_sol_2d_offset, clear_sol_2d_offset,
-        find_target_in_frame, find_target_multiscale,
         CALIBRATION_POSITIONS_2D, compute_safe_calibration_positions,
         OFFSET_MODE_PIXEL, OFFSET_MODE_ANGULAR  # Offset modes
     )

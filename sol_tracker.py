@@ -132,12 +132,17 @@ class ScreenProjector3D:
         # drops still recover in bounded time).
         self._homography_conflict_count = 0
         self._homography_conflict_start = None  # wall-clock of the first conflicting frame
-        self.homography_stale_px = 200.0     # stored reproj error (screen px) => hard reset
-        self.homography_converge_px = 60.0   # stored reproj error (screen px) => actively blend toward fresh
-        self.homography_fresh_px = 50.0      # fresh reproj error (screen px) => fresh is trustworthy
-        self.homography_reset_frames = 12    # frame-count trigger (fast path at high FPS)
-        self.homography_reset_min_frames = 4  # min frames before the wall-clock trigger may fire
-        self.homography_reset_seconds = 0.6  # wall-clock trigger (bounds recovery at low FPS)
+        # Stability: freeze the homography when it already maps the current markers well
+        # (head ~stationary / marker noise only) instead of chasing per-frame ArUco jitter.
+        self.homography_deadband_px = 25.0   # stored reproj error (screen px) below which: no update
+        # Self-heal hard reset: only for a SUSTAINED, large, well-conditioned disagreement
+        # (a genuine stuck/corrupt matrix, e.g. dragged off by a head tilt) -- kept well above
+        # normal head-movement tracking lag so it does not fire (and jump) during a test.
+        self.homography_stale_px = 350.0     # stored reproj error (screen px) => candidate for reset
+        self.homography_fresh_px = 50.0      # fresh reproj error (screen px) => fresh fit is trustworthy
+        self.homography_reset_frames = 15    # frame-count trigger (fast path at high FPS)
+        self.homography_reset_min_frames = 5  # min frames before the wall-clock trigger may fire
+        self.homography_reset_seconds = 0.8  # wall-clock trigger (bounds recovery at low FPS)
 
         # [2D Gaze Smoothing] Smooth the 2D gaze output to reduce jitter
         self.smoothed_gaze_2d_screen = None
@@ -566,33 +571,32 @@ class ScreenProjector3D:
                         # While confirming staleness, keep the stored matrix (don't blend toward a
                         # possibly-spurious fit) until the reset actually fires.
                     else:
-                        # Not stale enough for a hard reset -> decay evidence (leaky) and track via EMA.
+                        # Not stale -> decay reset evidence (leaky) and track via gentle EMA.
                         if self._homography_conflict_count > 0:
                             self._homography_conflict_count -= 1
                             if self._homography_conflict_count == 0:
                                 self._homography_conflict_start = None
 
-                        h_diff = np.abs(H - self.image_to_screen_homography).max()
-                        if fresh_err < self.homography_fresh_px and stored_err > self.homography_converge_px:
-                            # Stored matrix is measurably off on the current markers (but below the
-                            # hard-reset threshold) and the fresh fit is trustworthy -> actively pull
-                            # toward it, regardless of marker count or raw h_diff. Closes the dead band
-                            # where a moderate (~60-200px) skew at 6-7 markers would otherwise neither
-                            # reset nor blend, leaving gaze offset.
-                            smooth_factor = 0.25
-                        elif inlier_count >= 8:
-                            # Stored matrix is fine on the markers -> EMA for jitter, sized by change.
-                            if h_diff > 1000:
-                                smooth_factor = 0.0   # extreme single-frame jump -> ignore (stored ok on markers)
-                            elif h_diff > 200:
-                                smooth_factor = 0.5   # large change (head movement) - fast update
-                            elif h_diff > 50:
-                                smooth_factor = 0.3   # moderate change
-                            else:
-                                smooth_factor = self.smoothing_factor  # small change - normal smoothing
+                        if stored_err <= self.homography_deadband_px:
+                            # Stored matrix already maps the current markers well (head ~stationary /
+                            # only marker-detection noise). Freeze it -- do NOT chase per-frame jitter.
+                            # This is the main stability fix; gaze stays steady during fixation.
+                            smooth_factor = 0.0
                         else:
-                            # 6-7 markers: gentle smoothing; never fully frozen.
-                            smooth_factor = 0.15 if h_diff < 200 else 0.1
+                            # Real movement -> gentle EMA, strength scaled by how much H changed.
+                            h_diff = np.abs(H - self.image_to_screen_homography).max()
+                            if inlier_count >= 8:
+                                if h_diff > 1000:
+                                    smooth_factor = 0.0   # extreme single-frame jump -> ignore (sustained staleness handled above)
+                                elif h_diff > 200:
+                                    smooth_factor = 0.5   # large change (head movement)
+                                elif h_diff > 50:
+                                    smooth_factor = 0.3   # moderate change
+                                else:
+                                    smooth_factor = self.smoothing_factor  # small change - gentle
+                            else:
+                                # 6-7 markers: gentle, and only for small changes (fewer markers = noisier fit)
+                                smooth_factor = 0.15 if h_diff < 200 else 0.0
 
                         if smooth_factor > 0.0:
                             self.image_to_screen_homography = smooth_factor * H + (1 - smooth_factor) * self.image_to_screen_homography

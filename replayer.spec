@@ -9,7 +9,7 @@ DLL-dependency discovery, which would leave PyQt6's Qt6*.dll unbundled -> "DLL l
 while importing QtWidgets"). Here we keep normal discovery and collect PyQt6 explicitly.
 UPX is disabled because it can corrupt the Qt6 DLLs and cause the same load failure.
 """
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
 
@@ -20,6 +20,12 @@ _d, _b, _h = collect_all('PyQt6')
 datas += _d
 binaries += _b
 hiddenimports += _h
+
+# Shared NTUH library (the replayer package lives under ntuh.replayer)
+try:
+    hiddenimports += collect_submodules('ntuh')
+except Exception:
+    pass
 
 a = Analysis(
     ['replayer.py'],

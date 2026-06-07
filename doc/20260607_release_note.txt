@@ -1,0 +1,104 @@
+==============================================================================
+ NTUH Eye-Tracking Suite - Release Notes
+ Build date: 2026-06-07
+==============================================================================
+
+This release contains three Windows programs (debug / console builds):
+
+    VA_center_opt.exe   VA / VF test - stimulus + webcam & Sol-glasses recording
+    calibration.exe     Webcam eye-tracking calibration (creates user profiles)
+    replayer.exe        Review and label recorded sessions
+
+Each program lives in its own folder (e.g. VA_center_opt\). Copy the WHOLE
+folder to the target PC - the .exe needs the _internal\ folder and the data
+folders next to it.
+
+------------------------------------------------------------------------------
+ HOW TO RUN
+------------------------------------------------------------------------------
+- Double-click the .exe, OR double-click run_debug.bat (recommended): the
+  console window then stays open so any error / log is visible if it crashes.
+- A black console window next to the app is NORMAL for this debug build.
+
+Typical workflow per participant:
+    1. calibration.exe   - enter the participant name, run the webcam calibration
+    2. VA_center_opt.exe - use the SAME participant name, run the VA (or VF) test
+    3. replayer.exe      - open the session folder to review / label the data
+
+To stop a running VA / VF test: click on the test window, then press ESC
+(or hold Shift and press Q).
+
+------------------------------------------------------------------------------
+ WHERE DATA IS SAVED  (changed in this release)
+------------------------------------------------------------------------------
+All read/write data now lives NEXT TO THE .EXE (no longer hidden inside
+_internal\). In each program folder you will find:
+
+    VA_center_opt\
+        VA_output\             test recordings (one timestamped folder/session)
+        calibration_profiles\  calibration profiles it reads
+        logs\
+        刺激源圖片選擇\         stimulus images (e.g. ball.jpg)
+    calibration\
+        calibration_profiles\  profiles it creates
+        校正圖片選擇\           calibration target images
+        logs\
+
+IMPORTANT - sharing calibration profiles between the two programs:
+    calibration.exe   SAVES profiles to  calibration\calibration_profiles\
+    VA_center_opt.exe READS profiles from VA_center_opt\calibration_profiles\
+  These are separate folders. After calibrating a participant, either:
+    (a) copy the new  <name>_<points>pt  folder into
+        VA_center_opt\calibration_profiles\ , or
+    (b) in VA_center_opt's Webcam tab, set "Calibration Folder" to point at
+        calibration\calibration_profiles\ .
+  A default profile (anonymous_9pt) is already included in both folders.
+
+------------------------------------------------------------------------------
+ WHAT'S NEW / DIFFERENT
+------------------------------------------------------------------------------
+VA_center_opt
+  - Data-quality summary on the TESTER screen at the end of a test: per-source
+    "valid %" (100% = all data valid) for Sol (combined / left eye / right eye)
+    and webcam (face / left eye / right eye), for the whole test and trials only.
+    Also saved to sol_quality_metrics.json.
+  - Real-time gaze-quality readout during the test (rolling missing-rate).
+  - Optional quality gate ("User & Tracker" tab): wait for stable valid data
+    (>= threshold, default 80%, over a 3 s window) before each trial starts;
+    "WAITING FOR STABLE VALID DATA" shows until the enabled trackers are good.
+  - Webcam preview: green / red boxes on the face and each eye, plus a face-oval
+    centering guide with OK / TOO CLOSE / TOO FAR hints (about 60 cm target).
+  - "Verify Gaze" webcam preview: gray screen with 5 targets and a live gaze dot.
+  - Steadier Sol gaze: the scene->screen homography now stays frozen while the
+    head is still and only updates for real movement (no per-frame jitter), and
+    recovers automatically if knocked off by a large head tilt.
+  - Fixed an intermittent native crash during Sol streaming.
+  - Screen recording is downscaled to 1080p on 2K / 4K screens (avoids dropped
+    frames); the replayer scales gaze overlays to match.
+  - "left eye" / "right eye" always mean the participant's actual left / right eye.
+  - New per-session files: sol_quality_metrics.json, webcam_quality.csv,
+    screen_meta.json.
+
+replayer
+  - Data Quality panel: per-source valid % (whole test + trials only), plus
+    colour-coded Sol / webcam validity strips on the timeline.
+  - Review / labeling (human-in-the-loop): set each trial to Pass / Fail /
+    Discard and the whole record to Keep / Discard, with a reviewer name and an
+    optional note. Saved automatically to review_labels.json in the session
+    folder. Trial labels pre-fill from the test's pass/fail result.
+        Keys:  1 = Pass   2 = Fail   3 = Discard  (auto-advances to next trial)
+               N = next trial   B = previous trial
+  - The trial list automatically highlights the trial under the playhead.
+  - Gaze overlays are correctly aligned even when the screen video was downscaled.
+
+calibration
+  - Profiles are saved next to calibration.exe (calibration\calibration_profiles\).
+
+------------------------------------------------------------------------------
+ NOTES
+------------------------------------------------------------------------------
+- For Sol gaze, test different ArUco marker counts / sizes on the actual screen
+  so the markers do not overlap each other or the stimulus area.
+- Detailed per-program documentation: VA_center_opt.md, calibration.md,
+  replayer.md (in this folder).
+==============================================================================

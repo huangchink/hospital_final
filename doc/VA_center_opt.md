@@ -6,6 +6,17 @@ A visual acuity (VA) testing program using contrast sensitivity gratings with su
 
 VA_center_opt presents circular sinusoidal gratings at the center of the screen and uses a staircase procedure to measure the user's contrast sensitivity threshold. It supports dual eye-tracking sources (webcam + Sol glasses), records gaze data, screen video, and webcam video throughout the entire experiment.
 
+## What's new (2026-06-07)
+
+- **Data-quality summary** on the tester screen at the end of a test: per-source **valid %** (100% = all data valid) for Sol (combined / left / right eye) and webcam (face / left / right eye), whole-test and trials-only. Also written to `sol_quality_metrics.json`.
+- **Real-time gaze quality** readout during the test (rolling missing-rate).
+- **Quality gate** (User & Tracker tab): optionally wait until the enabled trackers have stable valid data (≥ threshold, default 80%, over 3 s) before each trial; otherwise "WAITING FOR STABLE VALID DATA" is shown.
+- **Webcam preview guide**: green/red boxes on the face + each eye and a face-oval centering guide with OK / TOO CLOSE / TOO FAR hints; plus a **Verify Gaze** preview (5 targets + live gaze dot).
+- **Steadier Sol gaze**: the scene→screen homography freezes while the head is still (no per-frame jitter) and self-recovers after a large head tilt. An intermittent native crash during Sol streaming was fixed.
+- **Screen recording downscaled to 1080p** on 2K/4K screens (avoids dropped frames); the replayer scales gaze overlays to match.
+- Eye labels are the **participant's actual left/right eye**.
+- Data is now saved **next to the .exe** (see Output Data).
+
 ## Quick Start
 
 1. **Calibrate first** - Run `calibration.exe` to create a user calibration profile (required for webcam tracking)
@@ -66,7 +77,7 @@ VA_center_opt presents circular sinusoidal gratings at the center of the screen 
 | Calibration Folder | Path to webcam calibration profiles | calibration_profiles/ |
 | Select Camera | Webcam device index | 0 |
 
-> **Note:** The Calibration Folder should point to the `calibration_profiles` directory inside the calibration tool's `_internal` folder (e.g., `calibration/_internal/calibration_profiles/`). This is where `calibration.exe` saves its output profiles.
+> **Note:** Profiles are read from the `calibration_profiles/` folder **next to `VA_center_opt.exe`**. To use a profile made by `calibration.exe` (which saves to `calibration/calibration_profiles/`), either copy its `<name>_<points>pt` folder here, or set this Calibration Folder to point at `calibration/calibration_profiles/`. A default `anonymous_9pt` profile is included.
 
 ### Sol Tab
 
@@ -105,10 +116,11 @@ Offset calibration for Sol glasses. Corrects systematic gaze offset when the Sol
 | Key | Action |
 |-----|--------|
 | ESC | Abort the test and return to settings |
+| Shift + Q | Abort the test (click the test window first) |
 
 ## Output Data
 
-Experiment data is saved to `VA_output/`:
+Experiment data is saved to `VA_output/` **next to `VA_center_opt.exe`**:
 
 ### Session Folder
 
@@ -125,7 +137,15 @@ VA_output/
     webcam_video_timestamp.csv  - Frame timestamps for webcam video
     screen_video_timestamp.csv  - Frame timestamps for screen video
     sol_video_timestamp.csv     - Frame timestamps for Sol video
+    sol_quality_metrics.json    - Per-source validity % (whole test + trials)
+    webcam_quality.csv          - Per-frame webcam face/eye validity
+    screen_meta.json            - Capture vs recorded screen resolution
+    trial_events.csv            - Per-trial start/end, CPD, side, result
+    review_labels.json          - Created later by replayer (review labels)
 ```
+
+> The screen video may be downscaled (e.g. 4K → 1080p); `screen_meta.json` records the
+> original screen resolution so the replayer can align the gaze overlays.
 
 ### Results CSV
 

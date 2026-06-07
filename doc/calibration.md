@@ -78,20 +78,23 @@ The calibration profile is saved automatically and a confirmation dialog appears
 
 ## Output
 
-Calibration profiles are saved to:
+Calibration profiles are saved **next to `calibration.exe`**, in:
 
 ```
 calibration_profiles/{username}_{points}pt/
 ```
 
-Example: User "edan" with 9 points creates `calibration_profiles/edan_9pt/`
+Example: User "edan" with 9 points creates `calibration/calibration_profiles/edan_9pt/`
+
+> **To use a profile in VA_center_opt:** `VA_center_opt.exe` reads from its own
+> `calibration_profiles/` folder. Either copy the new `{username}_{points}pt` folder into
+> `VA_center_opt/calibration_profiles/`, or set VA_center_opt's **Webcam tab → Calibration
+> Folder** to point at `calibration/calibration_profiles/`.
 
 ## Included Calibration Images
 
-The `calibration_images/` folder contains optional target images:
-
-- Pokemon characters (pikachu, squirtle, charizard, bulbasaur)
-- Use these for child-friendly calibration sessions
+The `校正圖片選擇/` folder (next to `calibration.exe`) contains optional target images. You
+can drop your own images into this folder to use them as calibration targets.
 
 ## Tips
 

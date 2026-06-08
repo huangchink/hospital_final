@@ -215,6 +215,9 @@ class SettingsWindow(tk.Tk):
         self.sol_offset_target_img_var = tk.StringVar(value="stimulus_images/ball.jpg")
         self.sol_offset_target_size_var = tk.StringVar(value="100")
         self.sol_offset_num_points_var = tk.StringVar(value="5")
+        # Offset space: screen-space (after homography, drift-free) vs camera-space (legacy);
+        # selectable so the two can be compared with the accuracy test.
+        self.sol_offset_mode_var = tk.StringVar(value="Screen-space (recommended)")
         self.sol_offset_user_screen_var = tk.StringVar(value="0")
         self.sol_offset_tester_screen_var = tk.StringVar(value="1")
 
@@ -904,6 +907,11 @@ class SettingsWindow(tk.Tk):
         ttk.Label(grp_target, text="Calibration Points:", font=l_font).grid(row=2, column=0, sticky="w", **pad)
         ttk.Combobox(grp_target, textvariable=self.sol_offset_num_points_var, values=["1", "3", "5", "9"], state="readonly", width=10).grid(row=2, column=1, sticky="w", **pad)
 
+        ttk.Label(grp_target, text="Offset Mode:", font=l_font).grid(row=3, column=0, sticky="w", **pad)
+        ttk.Combobox(grp_target, textvariable=self.sol_offset_mode_var,
+                     values=["Screen-space (recommended)", "Camera-space (legacy)"],
+                     state="readonly", width=26).grid(row=3, column=1, columnspan=2, sticky="w", **pad)
+
         # Display Settings
         grp_display = ttk.LabelFrame(parent, text="Display Settings")
         grp_display.pack(fill="x", padx=10, pady=5)
@@ -1171,15 +1179,18 @@ Controls: SPACE = Record point, Q = Cancel"""
         target_size = self.safe_get_int(self.sol_offset_target_size_var, 100)
         num_points = self.safe_get_int(self.sol_offset_num_points_var, 5)
 
-        # Screen-space offset mode: the correction is applied AFTER the homography, so it does not
-        # drift when the homography moves (head movement / reopened preview / running the test).
+        # Offset space chosen in the Sol Calib tab. Screen-space (default) applies the correction
+        # AFTER the homography (drift-free); camera-space (legacy) applies it BEFORE - kept so the
+        # two can be compared with the accuracy test.
+        offset_mode = OFFSET_MODE_PIXEL if "Camera" in self.sol_offset_mode_var.get() else OFFSET_MODE_SCREEN
+        print(f"[2D Cal] Offset mode: {offset_mode}")
         calibrator = Sol2DOffsetCalibrator(
             target_image_path=target_img_path,
             screen_width=screen_w,
             screen_height=screen_h,
             num_points=num_points,
             target_display_size=target_size,
-            offset_mode=OFFSET_MODE_SCREEN,
+            offset_mode=offset_mode,
             camera_matrix=None
         )
 
@@ -1386,24 +1397,35 @@ Controls: SPACE = Record point, Q = Cancel"""
                         print(f"[2D Cal] Collected {len(collected_gaze_samples)} samples: "
                               f"avg=({avg_x:.1f}, {avg_y:.1f}), std=({std_x:.1f}, {std_y:.1f})")
 
-                        # SCREEN-SPACE recording: map the averaged raw gaze through the CURRENT
-                        # forward homography (no offset/cull/smoothing) and record it against the
-                        # target's screen position. The learned offset is applied after the homography.
-                        H_now = sol_projector.get_homography()
-                        target_screen = calibrator.get_current_target_screen_position()
-                        mapped_screen = None
-                        if H_now is not None:
-                            s_vec = np.array([avg_gaze_2d[0], avg_gaze_2d[1], 1.0], dtype=float)
-                            d_vec = H_now @ s_vec
-                            if abs(d_vec[2]) > 1e-6:
-                                mapped_screen = (float(d_vec[0] / d_vec[2]), float(d_vec[1] / d_vec[2]))
-                        if mapped_screen is not None and target_screen is not None:
-                            calibrator.record_calibration_point_screen(mapped_screen, target_screen)
+                        if calibrator.offset_mode == OFFSET_MODE_SCREEN:
+                            # SCREEN-SPACE: map the averaged raw gaze through the CURRENT forward
+                            # homography (no offset/cull/smoothing) and record vs the target screen
+                            # position. The learned offset is applied AFTER the homography.
+                            H_now = sol_projector.get_homography()
+                            target_screen = calibrator.get_current_target_screen_position()
+                            mapped_screen = None
+                            if H_now is not None:
+                                s_vec = np.array([avg_gaze_2d[0], avg_gaze_2d[1], 1.0], dtype=float)
+                                d_vec = H_now @ s_vec
+                                if abs(d_vec[2]) > 1e-6:
+                                    mapped_screen = (float(d_vec[0] / d_vec[2]), float(d_vec[1] / d_vec[2]))
+                            if mapped_screen is not None and target_screen is not None:
+                                calibrator.record_calibration_point_screen(mapped_screen, target_screen)
+                            else:
+                                print("[2D Cal] WARNING: no valid homography to map this point; skipping")
+                                calibrator.current_point_index += 1
+                                if calibrator.current_point_index >= len(calibrator.positions):
+                                    calibrator.calibration_complete = True
                         else:
-                            print("[2D Cal] WARNING: no valid homography to map this point; skipping")
-                            calibrator.current_point_index += 1
-                            if calibrator.current_point_index >= len(calibrator.positions):
-                                calibrator.calibration_complete = True
+                            # CAMERA-SPACE (legacy): record raw gaze vs the target's camera-image
+                            # position via the inverse homography (offset applied BEFORE homography).
+                            if H_screen_to_image is not None:
+                                calibrator.record_calibration_point_with_homography(avg_gaze_2d, H_screen_to_image)
+                            else:
+                                print("[2D Cal] WARNING: no homography for camera-space point; skipping")
+                                calibrator.current_point_index += 1
+                                if calibrator.current_point_index >= len(calibrator.positions):
+                                    calibrator.calibration_complete = True
                     except Exception as e:
                         print(f"[2D Cal] Error recording calibration point: {e}")
                         traceback.print_exc()
@@ -2974,6 +2996,7 @@ Controls: SPACE = Record point, Q = Cancel"""
             'sol_offset_target_img': self.sol_offset_target_img_var.get(),
             'sol_offset_target_size': self.sol_offset_target_size_var.get(),
             'sol_offset_num_points': self.sol_offset_num_points_var.get(),
+            'sol_offset_mode': self.sol_offset_mode_var.get(),
             'sol_offset_user_screen': self.sol_offset_user_screen_var.get(),
             'sol_offset_tester_screen': self.sol_offset_tester_screen_var.get(),
             'sol_preview_screen': self.sol_preview_screen_var.get() if hasattr(self, 'sol_preview_screen_var') else "0",
@@ -3062,7 +3085,7 @@ Controls: SPACE = Record point, Q = Cancel"""
             self.sol_pose_smooth_var, self.sol_gaze_smooth_var, self.sol_gaze_method_var,
             self.sol_cal_show_gaze_var,
             self.sol_offset_target_img_var, self.sol_offset_target_size_var,
-            self.sol_offset_num_points_var, self.sol_offset_user_screen_var,
+            self.sol_offset_num_points_var, self.sol_offset_mode_var, self.sol_offset_user_screen_var,
             self.sol_offset_tester_screen_var,
             self.sol_quality_window_var,
             self.webcam_oval_size_var,
@@ -3117,6 +3140,7 @@ Controls: SPACE = Record point, Q = Cancel"""
             if 'sol_offset_target_img' in data: self.sol_offset_target_img_var.set(data['sol_offset_target_img'])
             if 'sol_offset_target_size' in data: self.sol_offset_target_size_var.set(str(data['sol_offset_target_size']))
             if 'sol_offset_num_points' in data: self.sol_offset_num_points_var.set(str(data['sol_offset_num_points']))
+            if 'sol_offset_mode' in data: self.sol_offset_mode_var.set(str(data['sol_offset_mode']))
             if 'sol_offset_user_screen' in data: self.sol_offset_user_screen_var.set(data['sol_offset_user_screen'])
             if 'sol_offset_tester_screen' in data: self.sol_offset_tester_screen_var.set(data['sol_offset_tester_screen'])
             if 'sol_preview_screen' in data and hasattr(self, 'sol_preview_screen_var'):

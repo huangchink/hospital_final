@@ -960,6 +960,11 @@ class ScreenProjector3D:
             model = self.gaze_2d_offset_model
             frame_count = self.gaze_2d_frame_count
 
+        # Screen-space models apply their offset AFTER the homography (in project_gaze_2d_to_screen),
+        # so the camera-space (pre-homography) correction is a no-op here.
+        if getattr(model, 'offset_mode', '') == 'screen':
+            return gaze_2d_point
+
         # Debug output every 100 frames
         debug = (frame_count % 100 == 1)
         return model.predict(gaze_2d_point, debug=debug)
@@ -1029,6 +1034,21 @@ class ScreenProjector3D:
             return None
 
         raw_pt = (x_screen, y_screen)
+
+        # Screen-space offset correction: applied AFTER the homography (immune to homography drift,
+        # since the residual is the gaze sensor's bias in screen space). Camera/angular models were
+        # already corrected before the homography (in apply_gaze_2d_offset).
+        if apply_offset:
+            with self.pose_lock:
+                _off_model = self.gaze_2d_offset_model
+            if (_off_model is not None and _off_model.is_trained
+                    and getattr(_off_model, 'offset_mode', '') == 'screen'):
+                try:
+                    corrected = _off_model.predict(raw_pt)
+                    if corrected is not None:
+                        raw_pt = (float(corrected[0]), float(corrected[1]))
+                except Exception:
+                    pass
 
         # Check if point is within screen bounds (with margin for edge tracking)
         margin = 100

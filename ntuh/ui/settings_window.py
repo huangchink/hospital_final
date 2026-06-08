@@ -54,13 +54,14 @@ try:
         Sol2DOffsetCalibrator, Sol2DOffsetModel,
         load_sol_2d_offset, save_sol_2d_offset, clear_sol_2d_offset,
         CALIBRATION_POSITIONS_2D, compute_safe_calibration_positions,
-        OFFSET_MODE_PIXEL, OFFSET_MODE_ANGULAR,
+        OFFSET_MODE_PIXEL, OFFSET_MODE_ANGULAR, OFFSET_MODE_SCREEN,
     )
     SOL_2D_OFFSET_AVAILABLE = True
 except ImportError:
     SOL_2D_OFFSET_AVAILABLE = False
     OFFSET_MODE_PIXEL = 'pixel'
     OFFSET_MODE_ANGULAR = 'angular'
+    OFFSET_MODE_SCREEN = 'screen'
 
 try:
     from PIL import Image, ImageTk
@@ -898,7 +899,7 @@ class SettingsWindow(tk.Tk):
         ttk.Spinbox(grp_target, textvariable=self.sol_offset_target_size_var, from_=50, to=500, increment=10, width=10).grid(row=1, column=1, sticky="w", **pad)
 
         ttk.Label(grp_target, text="Calibration Points:", font=l_font).grid(row=2, column=0, sticky="w", **pad)
-        ttk.Combobox(grp_target, textvariable=self.sol_offset_num_points_var, values=["1", "3", "5"], state="readonly", width=10).grid(row=2, column=1, sticky="w", **pad)
+        ttk.Combobox(grp_target, textvariable=self.sol_offset_num_points_var, values=["1", "3", "5", "9"], state="readonly", width=10).grid(row=2, column=1, sticky="w", **pad)
 
         # Display Settings
         grp_display = ttk.LabelFrame(parent, text="Display Settings")
@@ -1167,14 +1168,15 @@ Controls: SPACE = Record point, Q = Cancel"""
         target_size = self.safe_get_int(self.sol_offset_target_size_var, 100)
         num_points = self.safe_get_int(self.sol_offset_num_points_var, 5)
 
-        # Use pixel-based offset mode (simpler and proven to work)
+        # Screen-space offset mode: the correction is applied AFTER the homography, so it does not
+        # drift when the homography moves (head movement / reopened preview / running the test).
         calibrator = Sol2DOffsetCalibrator(
             target_image_path=target_img_path,
             screen_width=screen_w,
             screen_height=screen_h,
             num_points=num_points,
             target_display_size=target_size,
-            offset_mode=OFFSET_MODE_PIXEL,
+            offset_mode=OFFSET_MODE_SCREEN,
             camera_matrix=None
         )
 
@@ -1381,8 +1383,24 @@ Controls: SPACE = Record point, Q = Cancel"""
                         print(f"[2D Cal] Collected {len(collected_gaze_samples)} samples: "
                               f"avg=({avg_x:.1f}, {avg_y:.1f}), std=({std_x:.1f}, {std_y:.1f})")
 
-                        # Record the calibration point with averaged gaze
-                        calibrator.record_calibration_point_with_homography(avg_gaze_2d, H_screen_to_image)
+                        # SCREEN-SPACE recording: map the averaged raw gaze through the CURRENT
+                        # forward homography (no offset/cull/smoothing) and record it against the
+                        # target's screen position. The learned offset is applied after the homography.
+                        H_now = sol_projector.get_homography()
+                        target_screen = calibrator.get_current_target_screen_position()
+                        mapped_screen = None
+                        if H_now is not None:
+                            s_vec = np.array([avg_gaze_2d[0], avg_gaze_2d[1], 1.0], dtype=float)
+                            d_vec = H_now @ s_vec
+                            if abs(d_vec[2]) > 1e-6:
+                                mapped_screen = (float(d_vec[0] / d_vec[2]), float(d_vec[1] / d_vec[2]))
+                        if mapped_screen is not None and target_screen is not None:
+                            calibrator.record_calibration_point_screen(mapped_screen, target_screen)
+                        else:
+                            print("[2D Cal] WARNING: no valid homography to map this point; skipping")
+                            calibrator.current_point_index += 1
+                            if calibrator.current_point_index >= len(calibrator.positions):
+                                calibrator.calibration_complete = True
                     except Exception as e:
                         print(f"[2D Cal] Error recording calibration point: {e}")
                         traceback.print_exc()

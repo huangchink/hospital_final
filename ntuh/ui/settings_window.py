@@ -865,6 +865,9 @@ class SettingsWindow(tk.Tk):
         self.lbl_preview_note = ttk.Label(grp_preview, text="(Connect Sol glasses first)", foreground="gray")
         self.lbl_preview_note.grid(row=2, column=1, sticky="w", **pad)
 
+        self.btn_sol_accuracy_test = ttk.Button(grp_preview, text="Accuracy Test", command=self.run_sol_accuracy_test, state="disabled")
+        self.btn_sol_accuracy_test.grid(row=2, column=2, **pad)
+
         ttk.Label(grp_preview, text="Press Q or ESC to exit preview", font=("Arial", 9), foreground="gray").grid(row=3, column=0, columnspan=4, sticky="w", **pad)
 
     def build_sol_offset_tab(self, parent, l_font, e_font):
@@ -2381,6 +2384,281 @@ Controls: SPACE = Record point, Q = Cancel"""
             self.btn_start.configure(state="disabled")
             self.btn_practice.configure(state="disabled")
 
+    def run_sol_accuracy_test(self):
+        """Interactive Sol gaze ACCURACY + PRECISION test. Shows concentric-ring + corner targets;
+        the operator fixates each and presses SPACE. Measures error BEFORE and AFTER the loaded 2D
+        offset, plus gaze precision (sample stability). Saves CSV/JSON + heatmap & by-angle PNGs
+        under accuracy_test/. Uses the isolated (crash-safe) scene worker, like the preview."""
+        if not self.is_sol_connected:
+            messagebox.showerror("Error", "Sol glasses not connected.")
+            return
+        if self.sol_cam_params is None:
+            messagebox.showerror("Error", "Sol camera parameters not available.")
+            return
+
+        from datetime import datetime
+        from ntuh.sol.preview_client import SolPreviewClient
+        from ntuh.sol import accuracy_test as acc
+
+        # ArUco assets (markers must be on screen for the homography)
+        aruco_dict_map = {
+            "DICT_4X4_50": cv2.aruco.DICT_4X4_50, "DICT_4X4_100": cv2.aruco.DICT_4X4_100,
+            "DICT_4X4_250": cv2.aruco.DICT_4X4_250, "DICT_5X5_250": cv2.aruco.DICT_5X5_250,
+            "DICT_6X6_250": cv2.aruco.DICT_6X6_250,
+        }
+        selected_dict_id = aruco_dict_map.get(self.sol_aruco_dict_var.get(), cv2.aruco.DICT_4X4_250)
+        adict = cv2.aruco.getPredefinedDictionary(selected_dict_id)
+
+        monitors = getattr(self, 'preview_monitor_info', None) or get_monitor_info_windows()
+        if not monitors:
+            monitors = [{'index': 0, 'width': 1920, 'height': 1080, 'x': 0, 'y': 0}]
+        try:
+            screen_idx = int(self.sol_preview_screen_var.get().split(':')[0].strip())
+        except Exception:
+            screen_idx = 0
+        screen_idx = min(screen_idx, len(monitors) - 1)
+        screen = monitors[screen_idx]
+        screen_w, screen_h = screen['width'], screen['height']
+        screen_x, screen_y = screen.get('x', 0), screen.get('y', 0)
+
+        sol_cfg_for_assets = {
+            'marker_k': self.safe_get_int(self.sol_marker_k_var, 6),
+            'marker_n': self.safe_get_int(self.sol_marker_n_var, 4),
+            'marker_pattern_size': self.safe_get_int(self.sol_marker_size_var, 80),
+        }
+        aruco_markers_px, aruco_imgs = create_calibration_assets(screen_w, screen_h, adict, sol_cfg_for_assets)
+        marker_container_size = sol_cfg_for_assets['marker_pattern_size'] + 30
+        screen_width_cm = self.safe_get_float(self.scr_width_cm_var, 53.0)
+        screen_width_m = screen_width_cm / 100.0
+        view_dist_cm = self.safe_get_float(self.view_dist_cm_var, 60.0)
+
+        # Targets: center + rings(10,20 deg, 8 pts each) + 4 corners; off-screen ring pts skipped.
+        targets = acc.compute_accuracy_targets(screen_w, screen_h, view_dist_cm, screen_width_cm,
+                                               ring_eccentricities_deg=(10.0, 20.0), points_per_ring=8,
+                                               include_corners=True)
+        if not targets:
+            messagebox.showerror("Error", "No on-screen accuracy targets could be computed.")
+            return
+
+        # Load the 2D offset model under test (the currently-saved one for this user).
+        offset_model = None
+        username = self.user_var.get().strip() or 'anonymous'
+        if SOL_2D_OFFSET_AVAILABLE:
+            data = load_sol_2d_offset(username, Path(self.calib_dir_var.get()))
+            if data and data.get('model') and data['model'].is_trained:
+                offset_model = data['model']
+                print(f"[Accuracy] testing offset model for '{username}' "
+                      f"(mode={getattr(offset_model, 'offset_mode', '?')})")
+
+        cam_matrix = self.sol_cam_params.get('cam_matrix')
+        dist_coeffs = self.sol_cam_params.get('dist_coeffs')
+        if cam_matrix is None:
+            cam_matrix = np.array([[screen_w, 0, screen_w / 2], [0, screen_w, screen_h / 2], [0, 0, 1]], dtype=float)
+            dist_coeffs = np.zeros(5)
+        pose_smooth = self.safe_get_float(self.sol_pose_smooth_var, 0.1)
+        sol_params = {
+            'ip': self.sol_ip_var.get(), 'port': self.safe_get_int(self.sol_port_var, 8080),
+            'aruco_dict_id': int(selected_dict_id),
+            'screen_w': screen_w, 'screen_h': screen_h, 'screen_x': screen_x, 'screen_y': screen_y,
+            'marker_k': sol_cfg_for_assets['marker_k'], 'marker_n': sol_cfg_for_assets['marker_n'],
+            'marker_pattern_size': sol_cfg_for_assets['marker_pattern_size'],
+            'marker_container_size': marker_container_size,
+            'screen_width_m': screen_width_m, 'pose_smooth': pose_smooth,
+            'seed_homography': (self.sol_cached_homography.tolist()
+                                if self.sol_cached_homography is not None else None),
+        }
+
+        # Hand the device session to the isolated worker (crash-safe), like the preview.
+        self._stop_inprocess_sol()
+        sol_client = SolPreviewClient(sol_params)
+        sol_client.start()
+
+        sol_projector = ScreenProjector3D(cam_matrix, dist_coeffs, adict, smoothing_factor=pose_smooth)
+        sol_projector.screen_width_px = screen_w
+        sol_projector.screen_height_px = screen_h
+        if offset_model is not None:
+            sol_projector.set_gaze_2d_offset_model(offset_model)
+        if self.sol_cached_homography is not None:
+            sol_projector.set_homography(self.sol_cached_homography, valid=False)
+
+        self.in_sol_offset_calibration = True
+        self.withdraw()
+
+        import os as _os
+        _os.environ['SDL_VIDEO_WINDOW_POS'] = f"{screen_x},{screen_y}"
+        pygame.init()
+        win = pygame.display.set_mode((screen_w, screen_h), pygame.NOFRAME)
+        pygame.display.set_caption("Sol Accuracy Test")
+        clock = pygame.time.Clock()
+        font = pygame.font.SysFont(None, 40)
+        small = pygame.font.SysFont(None, 28)
+
+        static_bg = pygame.Surface((screen_w, screen_h))
+        static_bg.fill((60, 60, 60))
+        for _mid, _pos in aruco_markers_px.items():
+            if _mid in aruco_imgs:
+                _cv = aruco_imgs[_mid]
+                if len(_cv.shape) == 2:
+                    _cv = cv2.cvtColor(_cv, cv2.COLOR_GRAY2RGB)
+                elif _cv.shape[2] == 4:
+                    _cv = cv2.cvtColor(_cv, cv2.COLOR_BGRA2RGB)
+                else:
+                    _cv = cv2.cvtColor(_cv, cv2.COLOR_BGR2RGB)
+                static_bg.blit(pygame.image.frombuffer(_cv.tobytes(), _cv.shape[1::-1], "RGB"), (_pos[0], _pos[1]))
+
+        records = []
+        idx = 0
+        collecting = False
+        raw_samples, corr_samples = [], []
+        SAMPLES = 30
+        detected_marker_ids = []
+        latest_gaze = None
+        running = True
+        aborted = False
+
+        print(f"[Accuracy] {len(targets)} targets. Fixate each target and press SPACE; ESC/Q aborts.")
+        try:
+            while running and idx < len(targets):
+                try:
+                    if not pygame.display.get_init():
+                        break
+                except Exception:
+                    break
+
+                for ev in pygame.event.get():
+                    if ev.type == pygame.QUIT:
+                        running = False; aborted = True
+                    elif ev.type == pygame.KEYDOWN:
+                        if ev.key in (pygame.K_q, pygame.K_ESCAPE):
+                            running = False; aborted = True
+                        elif ev.key == pygame.K_SPACE and not collecting:
+                            if sol_projector.is_homography_valid():
+                                collecting = True; raw_samples, corr_samples = [], []
+                            else:
+                                print("[Accuracy] homography not ready; wait for LIVE/CACHED")
+
+                for g in sol_client.drain_gaze():
+                    latest_gaze = g
+                for m in sol_client.drain_msgs():
+                    t = m.get('type')
+                    if t == 'homography':
+                        _H = m.get('H')
+                        if _H is not None:
+                            sol_projector.set_homography(np.array(_H, dtype=float), valid=m.get('valid', False))
+                        else:
+                            sol_projector.homography_valid = bool(m.get('valid', False))
+                        detected_marker_ids = m.get('ids', [])
+                    elif t == 'pose':
+                        _rv, _tv = m.get('rvec'), m.get('tvec')
+                        sol_projector.set_pose(np.array(_rv, dtype=float) if _rv is not None else None,
+                                               np.array(_tv, dtype=float) if _tv is not None else None,
+                                               bool(m.get('valid', False)))
+                    elif t == 'connected':
+                        sol_client.resume()
+                _ev = sol_client.poll_supervisor(time.time(), sol_projector.get_homography())
+                if _ev == 'crashed':
+                    sol_projector.homography_valid = False; detected_marker_ids = []
+                elif _ev == 'failed':
+                    print("[Accuracy] scene worker could not recover; aborting")
+                    running = False; aborted = True
+
+                tgt = targets[idx]
+                if collecting and latest_gaze is not None:
+                    try:
+                        if hasattr(latest_gaze.combined, 'gaze_2d'):
+                            g2d = latest_gaze.combined.gaze_2d
+                            raw_s, corr_s = acc.map_raw_and_corrected(
+                                sol_projector.get_homography(), (g2d.x, g2d.y), offset_model)
+                            if raw_s is not None and corr_s is not None:
+                                raw_samples.append(raw_s); corr_samples.append(corr_s)
+                    except Exception:
+                        pass
+                    if len(corr_samples) >= SAMPLES:
+                        rec = acc.compute_point_record(tgt, raw_samples, corr_samples,
+                                                       view_dist_cm, screen_w, screen_width_cm)
+                        records.append(rec)
+                        print(f"[Accuracy] {idx + 1}/{len(targets)} {tgt['name']}: "
+                              f"acc raw={rec['err_raw_deg']:.2f} -> corr={rec['err_corr_deg']:.2f} deg, "
+                              f"precision={rec['prec_corr_deg']:.3f} deg")
+                        collecting = False; idx += 1; latest_gaze = None
+                        continue
+
+                # ---- render ----
+                win.blit(static_bg, (0, 0))
+                for mid in detected_marker_ids:
+                    if mid in aruco_markers_px:
+                        pos = aruco_markers_px[mid]
+                        pygame.draw.circle(win, (0, 180, 0),
+                                           (pos[0] + marker_container_size // 2, pos[1] + marker_container_size // 2), 8)
+                tx, ty = int(tgt['x']), int(tgt['y'])
+                col = (255, 80, 80) if collecting else (255, 255, 0)
+                pygame.draw.circle(win, col, (tx, ty), 26, 3)
+                pygame.draw.circle(win, col, (tx, ty), 6)
+                pygame.draw.line(win, col, (tx - 36, ty), (tx + 36, ty), 1)
+                pygame.draw.line(win, col, (tx, ty - 36), (tx, ty + 36), 1)
+
+                if sol_projector.is_homography_valid(strict=True):
+                    hom = "LIVE"
+                elif sol_projector.is_homography_valid():
+                    hom = "CACHED"
+                else:
+                    hom = "WAITING"
+                if collecting:
+                    msg = f"Collecting {len(corr_samples)}/{SAMPLES} - hold still"
+                else:
+                    msg = (f"Point {idx + 1}/{len(targets)} ({tgt['name']}, {tgt['ecc_deg']:.0f} deg) "
+                           f"- look at the target, press SPACE")
+                pygame.draw.rect(win, (0, 0, 0), (0, screen_h - 50, screen_w, 50))
+                win.blit(font.render(msg, True, (255, 255, 255)), (10, screen_h - 44))
+                win.blit(small.render(f"Homography: {hom}   |   ESC/Q to abort", True, (200, 200, 200)),
+                         (screen_w - 470, screen_h - 40))
+                pygame.display.flip()
+                clock.tick(30)
+        except Exception as e:
+            print(f"[Accuracy] error: {e}")
+            traceback.print_exc()
+        finally:
+            try:
+                self.sol_cached_homography = sol_projector.get_homography()
+            except Exception:
+                pass
+            try:
+                sol_client.stop()
+            except Exception:
+                pass
+            try:
+                pygame.quit()
+            except Exception:
+                pass
+            self.in_sol_offset_calibration = False
+            time.sleep(0.5)
+            self._connect_inprocess_sol()
+            time.sleep(0.1)
+            self.deiconify()
+
+        # ---- report ----
+        if records:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_dir = str(APP_DIR / "accuracy_test" / f"{username}_{ts}")
+            meta = {"user": username, "timestamp": ts, "screen_w": screen_w, "screen_h": screen_h,
+                    "view_dist_cm": view_dist_cm, "screen_width_cm": screen_width_cm,
+                    "n_points": len(records), "calib_model_loaded": offset_model is not None,
+                    "offset_mode": getattr(offset_model, 'offset_mode', None) if offset_model else None,
+                    "aborted": aborted}
+            try:
+                acc.save_accuracy_report(out_dir, records, meta)
+                ov = acc.summarize(records).get('_overall', {})
+                messagebox.showinfo("Accuracy Test Complete",
+                    f"Recorded {len(records)} point(s).\n"
+                    f"Mean accuracy: raw {ov.get('raw_mean_deg', 0):.2f} deg / {ov.get('raw_mean_px', 0):.0f} px "
+                    f"-> corrected {ov.get('corr_mean_deg', 0):.2f} deg / {ov.get('corr_mean_px', 0):.0f} px\n"
+                    f"Mean precision: {ov.get('prec_corr_deg', 0):.3f} deg / {ov.get('prec_corr_px', 0):.1f} px\n\n"
+                    f"Saved to:\n{out_dir}")
+            except Exception as e:
+                messagebox.showerror("Report Error", f"Recorded data but report failed: {e}")
+        else:
+            messagebox.showinfo("Accuracy Test", "Aborted - no points recorded.")
+
     def _connect_inprocess_sol(self):
         """(Re)establish the in-process Sol connection used by VA/VF tests + calibration.
         Asynchronous: sol_connected_callback / sol_failed_callback fire from the worker thread.
@@ -2439,9 +2717,11 @@ Controls: SPACE = Record point, Q = Cancel"""
                 self.btn_start_sol_2d_offset_cal.configure(state="disabled")
             if hasattr(self, 'lbl_sol_offset_connect_note'):
                 self.lbl_sol_offset_connect_note.configure(text="(Connect Sol glasses first)")
-            # Disable preview button
+            # Disable preview + accuracy buttons
             if hasattr(self, 'btn_preview_sol_gaze'):
                 self.btn_preview_sol_gaze.configure(state="disabled")
+            if hasattr(self, 'btn_sol_accuracy_test'):
+                self.btn_sol_accuracy_test.configure(state="disabled")
             if hasattr(self, 'lbl_preview_note'):
                 self.lbl_preview_note.configure(text="(Connect Sol glasses first)")
 
@@ -2462,9 +2742,11 @@ Controls: SPACE = Record point, Q = Cancel"""
             self.btn_start_sol_2d_offset_cal.configure(state="normal")
         if hasattr(self, 'lbl_sol_offset_connect_note'):
             self.lbl_sol_offset_connect_note.configure(text="")
-        # Enable preview button
+        # Enable preview + accuracy buttons
         if hasattr(self, 'btn_preview_sol_gaze'):
             self.btn_preview_sol_gaze.configure(state="normal")
+        if hasattr(self, 'btn_sol_accuracy_test'):
+            self.btn_sol_accuracy_test.configure(state="normal")
         if hasattr(self, 'lbl_preview_note'):
             self.lbl_preview_note.configure(text="")
 
@@ -2484,9 +2766,11 @@ Controls: SPACE = Record point, Q = Cancel"""
             self.btn_start_sol_2d_offset_cal.configure(state="disabled")
         if hasattr(self, 'lbl_sol_offset_connect_note'):
             self.lbl_sol_offset_connect_note.configure(text="(Connect Sol glasses first)")
-        # Disable preview button
+        # Disable preview + accuracy buttons
         if hasattr(self, 'btn_preview_sol_gaze'):
             self.btn_preview_sol_gaze.configure(state="disabled")
+        if hasattr(self, 'btn_sol_accuracy_test'):
+            self.btn_sol_accuracy_test.configure(state="disabled")
         if hasattr(self, 'lbl_preview_note'):
             self.lbl_sol_offset_connect_note.configure(text="(Connect Sol glasses first)")
 

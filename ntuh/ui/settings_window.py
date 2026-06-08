@@ -1845,44 +1845,54 @@ Controls: SPACE = Record point, Q = Cancel"""
             else:
                 print(f"[Sol Preview] No 2D offset model found for user '{username}' in {calib_dir}")
 
-        # Create projector
+        # ---- Process-isolated Sol scene pipeline (preview) ----
+        # The crash-prone scene H.264 decode + ArUco run in a CHILD process; the parent keeps a
+        # lightweight projector fed homography/pose over IPC and does only gaze->screen math, so a
+        # native SDK decode crash kills only the child (auto-respawned) and never the Tk app.
+        from ntuh.sol.preview_client import SolPreviewClient
+
         cam_matrix = self.sol_cam_params.get('cam_matrix')
         dist_coeffs = self.sol_cam_params.get('dist_coeffs')
         if cam_matrix is None:
             cam_matrix = np.array([[screen_w, 0, screen_w / 2], [0, screen_w, screen_h / 2], [0, 0, 1]], dtype=float)
             dist_coeffs = np.zeros(5)
 
-        sol_projector = ScreenProjector3D(cam_matrix, dist_coeffs, adict,
-                                         smoothing_factor=self.safe_get_float(self.sol_pose_smooth_var, 0.1))
+        pose_smooth = self.safe_get_float(self.sol_pose_smooth_var, 0.1)
+        sol_params = {
+            'ip': self.sol_ip_var.get(), 'port': self.safe_get_int(self.sol_port_var, 8080),
+            'aruco_dict_id': int(selected_dict_id),
+            'screen_w': screen_w, 'screen_h': screen_h, 'screen_x': screen_x, 'screen_y': screen_y,
+            'marker_k': sol_cfg_for_assets['marker_k'], 'marker_n': sol_cfg_for_assets['marker_n'],
+            'marker_pattern_size': sol_cfg_for_assets['marker_pattern_size'],
+            'marker_container_size': marker_container_size,
+            'screen_width_m': screen_width_m, 'pose_smooth': pose_smooth,
+            'seed_homography': (self.sol_cached_homography.tolist()
+                                if self.sol_cached_homography is not None else None),
+        }
 
-        # Restore cached homography if available for faster startup
-        if self.sol_cached_homography is not None:
-            sol_projector.set_homography(self.sol_cached_homography)
-            print(f"[Sol Preview] Restored cached homography")
+        # Hand the single device session over from the in-process connector to the child.
+        self._stop_inprocess_sol()
+        sol_client = SolPreviewClient(sol_params)
+        sol_client.start()
 
-        # Set 2D gaze smoothing factor and reset smoothing state
+        # Parent-side lightweight projector: NO decode, NO ArUco - just gaze->screen math.
+        sol_projector = ScreenProjector3D(cam_matrix, dist_coeffs, adict, smoothing_factor=pose_smooth)
+        # start_background_detection (skipped here) normally sets these; project_gaze_2d_to_screen
+        # needs them for off-screen culling + smoothing reset.
+        sol_projector.screen_width_px = screen_w
+        sol_projector.screen_height_px = screen_h
         sol_projector.set_gaze_2d_smoothing_factor(self.safe_get_float(self.sol_gaze_smooth_var, 0.15))
         sol_projector.reset_gaze_2d_smoothing()
-
-        # Set 2D offset model if available
         if preview_2d_offset_model and preview_2d_offset_model.is_trained:
             sol_projector.set_gaze_2d_offset_model(preview_2d_offset_model)
             print(f"[Sol Preview] Applied 2D offset model")
+        if self.sol_cached_homography is not None:
+            sol_projector.set_homography(self.sol_cached_homography, valid=False)  # seed CACHED
 
-        # Start background detection
-        sol_projector.start_background_detection(
-            sol_cfg_for_assets['marker_pattern_size'] / screen_w * screen_width_m,
-            aruco_markers_px,
-            marker_container_size,
-            screen_w, screen_h, screen_width_m
-        )
+        detected_marker_ids = []  # updated from the child's IPC homography messages
 
         # Set flag to prevent queue flushing
         self.in_sol_offset_calibration = True
-
-        # Resume scene stream for preview (may have been paused when returning to settings)
-        if self.active_sol_connector:
-            self.active_sol_connector.resume_scene_stream()
 
         # Hide settings window
         self.withdraw()
@@ -1937,14 +1947,9 @@ Controls: SPACE = Record point, Q = Cancel"""
         current_gaze_pt = None
         frame_count = 0
 
-        # [Crash mitigation] The Sol SDK decodes the scene H.264 stream inline on its asyncio
-        # thread; if that thread is starved of the GIL, RTP packets drop and the SDK feeds a
-        # malformed NAL to FFmpeg -> native access-violation crash. Reduce the competing CPU/GIL
-        # load: throttle ArUco detection to ~15Hz (plenty for homography tracking) and pre-compose
-        # the static marker background once instead of re-blitting 22 images on a 4K surface every
-        # frame. Combined with a 30fps loop, this keeps the RTP reader fed.
-        last_pose_submit = 0.0
-        POSE_SUBMIT_INTERVAL = 1.0 / 15.0
+        # Pre-compose the static marker background once (instead of re-blitting 22 images on a 4K
+        # surface every frame) to keep the render light. Scene decode + ArUco (and their ~15Hz
+        # throttle) now run in the isolated child, off this process entirely.
         static_bg = pygame.Surface((screen_w, screen_h))
         static_bg.fill(TRANSPARENT_COLOR)
         for _mid, _pos in aruco_markers_px.items():
@@ -1981,39 +1986,43 @@ Controls: SPACE = Record point, Q = Cancel"""
                             if ev.key in (pygame.K_q, pygame.K_ESCAPE):
                                 running = False
 
-                    # Get gaze data (limit to 20 items to prevent delays)
-                    for _ in range(20):
-                        try:
-                            gaze = self.sol_gaze_queue.get_nowait()
-                            latest_gaze = gaze
-                        except queue.Empty:
-                            break
+                    # Pull gaze + homography/pose from the isolated child (no in-process decode).
+                    _gl = sol_client.drain_gaze()
+                    if _gl:
+                        latest_gaze = _gl[-1]   # keep last; do NOT reset to None between frames
+                    for _m in sol_client.drain_msgs():
+                        _t = _m.get('type')
+                        if _t == 'homography':
+                            _H = _m.get('H')
+                            if _H is not None:
+                                sol_projector.set_homography(np.array(_H, dtype=float), valid=_m.get('valid', False))
+                            else:
+                                sol_projector.homography_valid = bool(_m.get('valid', False))
+                            detected_marker_ids = _m.get('ids', [])
+                        elif _t == 'pose':
+                            _rv = _m.get('rvec'); _tv = _m.get('tvec')
+                            sol_projector.set_pose(
+                                np.array(_rv, dtype=float) if _rv is not None else None,
+                                np.array(_tv, dtype=float) if _tv is not None else None,
+                                bool(_m.get('valid', False)))
+                        elif _t == 'connected':
+                            sol_client.resume()   # start scene streaming for ArUco
+                        elif _t == 'connect_failed':
+                            print(f"[Sol Preview] child connect failed: {_m.get('error')}")
 
-                    # Get scene frames and submit for ArUco detection (limit to 10 items)
-                    latest_frame_numpy = None
-                    for _ in range(10):
-                        try:
-                            frame = self.sol_scene_queue.get_nowait()
-                            if hasattr(frame, 'img') and frame.img is not None:
-                                latest_frame_numpy = frame.img
-                            elif hasattr(frame, 'get_buffer'):
-                                try:
-                                    w, h = 1328, 1200
-                                    buf = frame.get_buffer()
-                                    arr = np.frombuffer(buf, dtype=np.uint8)
-                                    latest_frame_numpy = arr.reshape((h, w, 3))
-                                except:
-                                    pass
-                            elif isinstance(frame, np.ndarray):
-                                latest_frame_numpy = frame
-                        except queue.Empty:
-                            break
-
-                    if latest_frame_numpy is not None:
-                        now_t = time.time()
-                        if now_t - last_pose_submit >= POSE_SUBMIT_INTERVAL:
-                            sol_projector.submit_frame_for_pose(latest_frame_numpy)
-                            last_pose_submit = now_t
+                    # Supervisor: a child crash kills only the child; keep mapping on the frozen
+                    # homography and auto-respawn.
+                    _ev = sol_client.poll_supervisor(time.time(), sol_projector.get_homography())
+                    if _ev == 'crashed':
+                        sol_projector.homography_valid = False   # -> CACHED in 2D
+                        detected_marker_ids = []
+                        print(f"[Sol Preview] scene worker crashed (exit {sol_client.last_exitcode}); "
+                              f"respawning - gaze frozen on cached homography")
+                    elif _ev == 'respawned':
+                        print("[Sol Preview] scene worker respawned")
+                    elif _ev == 'failed':
+                        print("[Sol Preview] scene worker could not recover; exiting preview")
+                        running = False
 
                     # Process gaze based on selected method
                     gaze_method = self.sol_gaze_method_var.get()
@@ -2089,9 +2098,8 @@ Controls: SPACE = Record point, Q = Cancel"""
                     # was a major main-thread GIL hog that starved the Sol scene RTP reader.
                     win.blit(static_bg, (0, 0))
 
-                    # Draw green dots on detected markers (visualization of detection status)
-                    detected_ids = sol_projector.get_detected_marker_ids()
-                    for mid in detected_ids:
+                    # Draw green dots on detected markers (from the child's IPC detection status)
+                    for mid in detected_marker_ids:
                         if mid in aruco_markers_px:
                             pos = aruco_markers_px[mid]
                             # Center of the marker container
@@ -2147,17 +2155,18 @@ Controls: SPACE = Record point, Q = Cancel"""
             except Exception as e:
                 print(f"[Sol Preview] Error caching homography: {e}")
             try:
-                sol_projector.stop_background_detection()
+                sol_client.stop()   # graceful stop of the isolated scene worker (closes device TCP)
             except Exception as e:
-                print(f"[Sol Preview] Error stopping ArUco detection: {e}")
+                print(f"[Sol Preview] Error stopping scene worker: {e}")
             try:
                 pygame.quit()
             except Exception as e:
                 print(f"[Sol Preview] Error quitting pygame: {e}")
             self.in_sol_offset_calibration = False
-            # Pause scene stream when returning to settings to avoid native crash
-            if self.active_sol_connector:
-                self.active_sol_connector.pause_scene_stream()
+            # Restore the in-process Sol connection for VA/VF tests + calibration. Brief pause so
+            # the device frees the session the child just released.
+            time.sleep(0.5)
+            self._connect_inprocess_sol()
             # Small delay to ensure cleanup is complete before showing main window
             time.sleep(0.1)
             self.deiconify()
@@ -2354,32 +2363,47 @@ Controls: SPACE = Record point, Q = Cancel"""
             self.btn_start.configure(state="disabled")
             self.btn_practice.configure(state="disabled")
 
+    def _connect_inprocess_sol(self):
+        """(Re)establish the in-process Sol connection used by VA/VF tests + calibration.
+        Asynchronous: sol_connected_callback / sol_failed_callback fire from the worker thread.
+        Used both by the Connect button and to restore the connection after the isolated preview."""
+        if not SDK_AVAILABLE:
+            return
+        self.sol_gaze_queue = queue.Queue(maxsize=100)  # Limit to prevent memory issues
+        self.sol_scene_queue = queue.Queue(maxsize=1)
+        self.active_sol_connector = SolConnector(
+            self.sol_ip_var.get(),
+            self.safe_get_int(self.sol_port_var, 8080),
+            self.sol_gaze_queue,
+            self.sol_scene_queue
+        )
+        self.sol_thread = threading.Thread(
+            target=run_sol_worker,
+            args=(self.active_sol_connector, self.sol_connected_callback, self.sol_failed_callback),
+            daemon=True
+        )
+        self.sol_thread.start()
+        self.active_sol_connector._worker_thread = self.sol_thread
+
+    def _stop_inprocess_sol(self):
+        """Stop the in-process Sol connection so the isolated preview child can take the single
+        device session. Keeps self.sol_cam_params (the parent-side projector still needs it)."""
+        if self.active_sol_connector:
+            try:
+                self.active_sol_connector.stop()
+            except Exception:
+                pass
+        self.active_sol_connector = None
+
     def toggle_sol_connection(self):
         if not self.is_sol_connected: # Connect
             if not SDK_AVAILABLE:
                 messagebox.showerror("Error", "Sol SDK not available.")
                 return
-            
+
             self.btn_connect_sol.configure(state="disabled", text="Connecting...")
             self.lbl_sol_status.configure(text="Connecting...", foreground="orange")
-            
-            self.sol_gaze_queue = queue.Queue(maxsize=100)  # Limit to prevent memory issues
-            self.sol_scene_queue = queue.Queue(maxsize=1)
-            
-            self.active_sol_connector = SolConnector(
-                self.sol_ip_var.get(),
-                self.safe_get_int(self.sol_port_var, 8080),
-                self.sol_gaze_queue,
-                self.sol_scene_queue
-            )
-            
-            self.sol_thread = threading.Thread(
-                target=run_sol_worker,
-                args=(self.active_sol_connector, self.sol_connected_callback, self.sol_failed_callback),
-                daemon=True
-            )
-            self.sol_thread.start()
-            self.active_sol_connector._worker_thread = self.sol_thread
+            self._connect_inprocess_sol()
 
         else: # Disconnect (Not fully implemented cleanup in logic, but UI wise)
             # For simplicity, we just mark disconnected and stop flush.

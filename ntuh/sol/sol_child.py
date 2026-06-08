@@ -69,6 +69,21 @@ def run_child(params, gaze_q, msg_q, cmd_q):
     except Exception:
         pass
 
+    # TEST HOOK: set SOL_CHILD_CRASH_AFTER=<seconds> to simulate the native decode crash
+    # (hard process exit) so the parent's crash/respawn path can be exercised without the SDK.
+    import os
+    _crash_after = os.environ.get("SOL_CHILD_CRASH_AFTER")
+    if _crash_after:
+        def _suicide():
+            try:
+                delay = float(_crash_after)
+            except ValueError:
+                return
+            time.sleep(delay)
+            print("[sol_child] TEST: simulating native crash via os._exit(1)", file=sys.stderr)
+            os._exit(1)
+        threading.Thread(target=_suicide, daemon=True).start()
+
     if not SDK_AVAILABLE:
         try:
             msg_q.put({"type": sol_ipc.CONNECT_FAILED, "error": "Sol SDK not available in child"})

@@ -49,18 +49,6 @@ Under the hood
     No change to how the programs are used or where data is saved.
 
 ------------------------------------------------------------------------------
- KNOWN LIMITATION - Sol glasses in the packaged .exe
-------------------------------------------------------------------------------
-The Sol-glasses features (gaze preview, 2D calibration, the new accuracy test,
-and Sol recording during a test) require the Ganzin Sol SDK, which the packaged
-.exe cannot currently initialize (a "websockets" dependency is missing from the
-bundle). In the .exe these Sol features will be unavailable.
-
-The WEBCAM-based VA / VF test, the webcam calibration, and the replayer work
-normally in the .exe. To use the Sol-glasses features, run from the Python
-source for now.
-
-------------------------------------------------------------------------------
  NOTES
 ------------------------------------------------------------------------------
 - For Sol gaze, test different ArUco marker counts / sizes on the actual screen

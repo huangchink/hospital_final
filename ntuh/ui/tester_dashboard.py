@@ -116,11 +116,11 @@ class TesterDashboard:
         the 60 fps stimulus loop adds negligible overhead."""
         now = time.time()
         if now - self._last_pump < 0.04:
-            return
+            return -1
         with self._canvas_lock:
             canvas = self._latest
         if canvas is None:
-            return
+            return -1
         self._last_pump = now
         try:
             if not self._window_created:
@@ -134,9 +134,12 @@ class TesterDashboard:
                         pass
                 self._window_created = True
             cv2.imshow(self.WIN_NAME, canvas)
-            cv2.waitKey(1)
+            # Return the key so callers can accept 'q' even when this OpenCV (tester) window holds
+            # the OS keyboard focus instead of the pygame user window.
+            return cv2.waitKey(1) & 0xFF
         except Exception as e:
             print(f"[Dashboard] pump error: {e}")
+            return -1
 
     def _render(self):
         canvas = np.full((self.CANVAS_H, self.PANEL_W * 2, 3), 30, dtype=np.uint8)

@@ -11,6 +11,7 @@ va_crash_log.txt
 # Output Data
 VA_output/
 VF_output/
+accuracy_test/
 data/
 *.csv
 

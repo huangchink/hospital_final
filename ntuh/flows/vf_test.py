@@ -834,8 +834,11 @@ def run_vf_test(cfg, sol_context=None):
             pygame.display.flip()
             waiting = True
             while waiting:
-                if dashboard is not None:
-                    dashboard.pump()   # keep the data-quality summary on the tester screen
+                # Accept 'q' from EITHER the pygame user window OR the OpenCV tester window -
+                # whichever holds the OS keyboard focus (the dashboard window can steal it).
+                dash_key = dashboard.pump() if dashboard is not None else -1
+                if dash_key == ord('q'):
+                    waiting = False
                 for ev in pygame.event.get():
                     if ev.type == pygame.QUIT or (ev.type == pygame.KEYDOWN and ev.key == pygame.K_q):
                         waiting = False

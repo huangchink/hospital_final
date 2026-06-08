@@ -2489,6 +2489,20 @@ Controls: SPACE = Record point, Q = Cancel"""
         pygame.init()
         win = pygame.display.set_mode((screen_w, screen_h), pygame.NOFRAME)
         pygame.display.set_caption("Sol Accuracy Test")
+        # Bring the window to the foreground so SPACE / Q / ESC register immediately.
+        try:
+            _u32 = ctypes.windll.user32
+            _hwnd = pygame.display.get_wm_info()['window']
+            _fg = _u32.GetWindowThreadProcessId(_u32.GetForegroundWindow(), None)
+            _ours = _u32.GetCurrentThreadId()
+            if _fg != _ours:
+                _u32.AttachThreadInput(_fg, _ours, True)
+            _u32.SetForegroundWindow(_hwnd)
+            _u32.BringWindowToTop(_hwnd)
+            if _fg != _ours:
+                _u32.AttachThreadInput(_fg, _ours, False)
+        except Exception as _e:
+            print(f"[Accuracy] could not bring window to front: {_e}")
         clock = pygame.time.Clock()
         font = pygame.font.SysFont(None, 40)
         small = pygame.font.SysFont(None, 28)

@@ -1327,15 +1327,16 @@ def run_test(cfg, sol_context=None):
     pygame.display.flip()
     
     while True:
-        if dashboard is not None:
-            dashboard.pump()   # keep showing the data-quality summary on the tester screen
+        # Accept 'q' from EITHER the pygame user window OR the OpenCV tester (dashboard) window -
+        # whichever holds the OS keyboard focus (the dashboard window can steal it).
+        dash_key = dashboard.pump() if dashboard is not None else -1
+        quit_now = (dash_key == ord('q'))
         for ev in pygame.event.get():
-            if ev.type == pygame.QUIT: break
-            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_q: break
-        else:
-            time.sleep(0.05)
-            continue
-        break
+            if ev.type == pygame.QUIT or (ev.type == pygame.KEYDOWN and ev.key == pygame.K_q):
+                quit_now = True
+        if quit_now:
+            break
+        time.sleep(0.05)
 
     # End - cleanup and return to main loop (keep Sol connection alive for reuse)
     if dashboard is not None: dashboard.stop()

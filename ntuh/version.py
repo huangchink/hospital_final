@@ -20,7 +20,9 @@ VA_center_opt
 calibration
     1.0.0  Baseline: multi-screen selection, screen-width (cm) input, image size
            shown in cm, flexible/auto-sized config window, configurable profile
-           output folder, and remembered settings.
+           output folder, remembered settings, a webcam preview button (identify
+           cameras without calibrating), and 'q'-to-quit on the calibration
+           screens (matching VA_center_opt).
 replayer
     1.0.0  Baseline: versioning introduced.
 """

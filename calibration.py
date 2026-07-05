@@ -24,6 +24,55 @@ from ntuh.common.win_monitors import get_monitor_info_windows
 from ntuh.common.optics import px_to_cm
 from ntuh.version import get_version
 
+from gazefollower.ui.UIBackend import PyGameUIBackend as _PyGameUIBackend
+
+
+# [CalibPatch] Make 'q' quit the calibration/preview screens, matching VA_center_opt.py's
+# 'q'-to-exit. Non-invasive: we wrap the vendored PyGame backend's key handlers at runtime
+# (the gazefollower files are left untouched, same idea as `gazefollower.logging = logging`).
+# 'q' aborts from ANY gazefollower pygame screen (camera preview, guidance, calibration
+# points, result) exactly like clicking the window close button; SPACE/R keep their meaning.
+def _install_q_to_quit():
+    def listen_event(self, host, skip_event=False):
+        for event in pygame.event.get():
+            # Quit keys are honored even while other events are skipped (e.g. during
+            # calibration point capture, where gazefollower passes skip_event=True).
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                raise SystemExit
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_q:
+                pygame.quit()
+                raise SystemExit
+            if skip_event:
+                continue
+            if (event.type == pygame.MOUSEBUTTONDOWN
+                    and hasattr(host, 'stop_button_rect')
+                    and host.stop_button_rect is not None
+                    and self.pos_in_rect(event.pos, host.stop_button_rect)):
+                host.running = False
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                host.running = False
+
+    def listen_keys(self, key):
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                raise SystemExit
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_q:
+                    pygame.quit()
+                    raise SystemExit
+                key_name = pygame.key.name(event.key)
+                if key_name in key:
+                    return key_name
+        return None
+
+    _PyGameUIBackend.listen_event = listen_event
+    _PyGameUIBackend.listen_keys = listen_keys
+
+
+_install_q_to_quit()
+
 
 # Base dir for writable/user data. When frozen by PyInstaller, __file__ is inside the
 # bundle, so anchor to the .exe's folder instead (dev behaviour unchanged).
@@ -167,8 +216,14 @@ class CalibGUI(tk.Tk):
         ttk.Label(grp_p, text="User name:").grid(row=0, column=0, sticky="w", **pad)
         ttk.Entry(grp_p, textvariable=self.user).grid(row=0, column=1, sticky="ew", **pad)
         ttk.Label(grp_p, text="Camera:").grid(row=1, column=0, sticky="w", **pad)
-        ttk.Combobox(grp_p, textvariable=self.camera_idx, values=cams,
-                     state="readonly", width=6).grid(row=1, column=1, sticky="w", **pad)
+        cam_row = ttk.Frame(grp_p)
+        cam_row.grid(row=1, column=1, sticky="w", **pad)
+        ttk.Combobox(cam_row, textvariable=self.camera_idx, values=cams,
+                     state="readonly", width=6).pack(side="left")
+        ttk.Button(cam_row, text="Preview camera",
+                   command=self._preview_camera).pack(side="left", padx=(8, 0))
+        ttk.Label(cam_row, text="(see which is which)",
+                  foreground="gray").pack(side="left", padx=(6, 0))
         ttk.Label(grp_p, text="Calibration points:").grid(row=2, column=0, sticky="w", **pad)
         ttk.Combobox(grp_p, textvariable=self.pts, values=[5, 9, 13],
                      state="readonly", width=8).grid(row=2, column=1, sticky="w", **pad)
@@ -224,6 +279,9 @@ class CalibGUI(tk.Tk):
 
         ttk.Button(outer, text="Start calibration",
                    command=self._start).grid(row=4, column=0, pady=12)
+        ttk.Label(outer,
+                  text="During calibration:  SPACE = proceed / accept     R = redo     Q = quit",
+                  foreground="gray").grid(row=5, column=0, pady=(0, 4))
 
         # Live-update the derived labels when inputs change.
         for var in (self.cali_img_w, self.cali_img_h, self.scr_width_cm, self.screen_var):
@@ -279,6 +337,78 @@ class CalibGUI(tk.Tk):
         )
         if d:
             self.out_dir.set(d)
+
+    def _preview_camera(self):
+        """Show a live webcam view so the user can tell which camera index is which,
+        WITHOUT starting calibration. In the preview window: 'n' = next camera,
+        'q' / ESC = close. The camera being viewed on close becomes the selected one."""
+        import numpy as _np
+        cams = getattr(self, '_cams', None) or [0]
+        try:
+            i = cams.index(self._safe_int(self.camera_idx, cams[0]))
+        except ValueError:
+            i = 0
+        win_name = "Camera preview"
+
+        def _open(idx):
+            c = cv2.VideoCapture(idx, cv2.CAP_DSHOW)  # DSHOW = fast open on Windows
+            if not c.isOpened():
+                c.release()
+                c = cv2.VideoCapture(idx)  # fall back to the default backend
+            return c
+
+        cap = None
+        cur = cams[i]
+        try:
+            cap = _open(cur)
+            if not cap or not cap.isOpened():
+                messagebox.showerror("Camera preview", f"Cannot open camera {cur}.")
+                return
+            while True:
+                ok, frame = (cap.read() if cap is not None else (False, None))
+                if not ok or frame is None:
+                    frame = _np.zeros((360, 640, 3), dtype=_np.uint8)
+                    cv2.putText(frame, f"Camera {cur}: no signal", (18, 40),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (60, 60, 255), 2)
+                label = f"Camera {cur}   [{i + 1}/{len(cams)}]   n = next    q / ESC = use this & close"
+                # outline + text so it is readable on any background
+                cv2.putText(frame, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 4)
+                cv2.putText(frame, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
+                cv2.imshow(win_name, frame)
+
+                k = cv2.waitKey(30) & 0xFF
+                if k in (ord('q'), ord('Q'), 27):  # q or ESC
+                    break
+                if k in (ord('n'), ord('N')) and len(cams) > 1:
+                    if cap is not None:
+                        cap.release()
+                    i = (i + 1) % len(cams)
+                    cur = cams[i]
+                    cap = _open(cur)
+                # window closed via the X button
+                try:
+                    if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
+                        break
+                except Exception:
+                    break
+            # Select whichever camera the user ended the preview on.
+            self.camera_idx.set(str(cur))
+        except Exception as e:
+            try:
+                messagebox.showerror("Camera preview", f"Preview error: {e}")
+            except Exception:
+                pass
+        finally:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            try:
+                cv2.destroyWindow(win_name)
+                cv2.waitKey(1)  # let OpenCV actually process the window teardown
+            except Exception:
+                pass
 
     def _safe_float(self, var, default=0.0):
         try:
@@ -517,19 +647,32 @@ def main():
     ensure_pygame_focus()
 
     # 預覽 → 執行校正 → 存檔（不做備份、直接覆蓋）
+    # Pressing 'q' on any calibration screen raises SystemExit (see _install_q_to_quit);
+    # we catch it to shut down cleanly without saving, matching VA_center_opt's 'q'-to-exit.
+    completed = False
     try:
         gf.preview(win=win)
         gf.calibrate(win=win)
         ok = gf.calibration.save_model()
         print(f"[Saved] {ok} → {profile_dir}")
+        completed = True
+    except SystemExit:
+        print("[Calibration] Aborted by user (Q).")
     finally:
         # 無論成功/失敗都恢復事件過濾器，避免鍵盤卡住
         restore_event_filter()
 
     # 收尾
-    gf.release()
-    pygame.quit()
-    messagebox.showinfo("Done", f"Calibration saved to:\n{profile_dir}")
+    try:
+        gf.release()
+    except Exception:
+        pass
+    try:
+        pygame.quit()
+    except Exception:
+        pass
+    if completed:
+        messagebox.showinfo("Done", f"Calibration saved to:\n{profile_dir}")
 
 if __name__ == "__main__":
     main()

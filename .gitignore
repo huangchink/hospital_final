@@ -23,6 +23,10 @@ data/
 calibration_profiles/
 *sol*offset*.json
 
+# Per-machine remembered settings (calibration tool)
+calibration_config.json
+.kb_layout_backup
+
 # Build Artifacts (PyInstaller)
 build/
 dist/

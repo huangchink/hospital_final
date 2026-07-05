@@ -1,0 +1,71 @@
+==============================================================================
+ NTUH Eye-Tracking Suite - Release Notes
+ Build date: 2026-07-05
+==============================================================================
+
+This release builds on the 2026-06-08 build (same three programs:
+VA_center_opt.exe, calibration.exe, replayer.exe). How to run, where data is
+saved, and the per-participant workflow are UNCHANGED - see the earlier release
+notes in this folder for those. Below are only the changes since 2026-06-08.
+
+------------------------------------------------------------------------------
+ VERSION NUMBERS  (new)
+------------------------------------------------------------------------------
+Each program now shows its version in the window title bar, so you can tell
+exactly which build you are running (and quote it when reporting anything):
+      VA_center_opt   v1.0.0
+      calibration     v1.0.1
+      replayer        v1.0.0
+Please include the version shown in the title when reporting an issue.
+
+------------------------------------------------------------------------------
+ WEBCAM CALIBRATION TOOL  (calibration.exe)  -- major update, v1.0.1
+------------------------------------------------------------------------------
+The configuration window was reworked:
+
+  - Screen selection: with more than one monitor, choose which screen the
+    calibration targets appear on (previously it always used the primary
+    screen).
+  - Screen width (cm): enter the physical width of the calibration screen.
+  - The calibration image size is now shown in centimetres as well as pixels,
+    computed from the selected screen's width and resolution.
+  - Profile output folder: choose where the calibration profile is saved
+    (default: calibration_profiles\<name>_<points>pt). Point the VA/VF app's
+    calibration folder at that same folder.
+  - Settings are remembered between runs (user name, camera, points, target
+    image, screen, screen width, output folder).
+  - "Preview camera" button: shows a live view of a webcam WITHOUT starting
+    calibration, so you can tell which camera is which. In the preview window:
+          n         = switch to the next camera
+          q / Esc   = close (the camera you were viewing becomes the selected one)
+  - The window resizes to fit its contents.
+
+  Keys during the calibration itself:
+          SPACE = proceed / accept      R = redo the calibration      Q = quit
+  On the result screen, the RED dot is where the target actually was and the
+  GREEN dot is where the model predicted the gaze - the closer the two, the
+  better the calibration. If they are far apart, press R and recalibrate under
+  better conditions (lighting, no glasses reflections, steady head, fixate each
+  target).
+
+  - The keyboard is temporarily switched to English (US) on start and restored
+    on exit, so q / SPACE work even when an IME is active (same behaviour as the
+    VA/VF program). If a run is interrupted, the layout is restored on the next
+    launch.
+
+------------------------------------------------------------------------------
+ SOL 2D OFFSET CALIBRATION  (VA_center_opt - "Sol Calib" tab)
+------------------------------------------------------------------------------
+  - New "Offset Mode" selector: Screen-space (recommended; applied after the
+    ArUco homography, so it does not drift when the head/pose changes) vs.
+    Camera-space (legacy). Use the Sol Gaze Accuracy Test to compare the two on
+    your own setup.
+
+------------------------------------------------------------------------------
+ NOTES
+------------------------------------------------------------------------------
+- For Sol gaze, test different ArUco marker counts / sizes on the actual screen
+  so the markers do not overlap each other or the stimulus area.
+- Detailed per-program documentation: VA_center_opt.md, calibration.md,
+  replayer.md (in this folder).
+==============================================================================

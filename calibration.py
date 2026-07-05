@@ -22,6 +22,7 @@ from gazefollower.camera import WebCamCamera
 # spawn/import-light constraint here (unlike VA_center_opt.py).
 from ntuh.common.win_monitors import get_monitor_info_windows
 from ntuh.common.optics import px_to_cm
+from ntuh.common.keyboard_layout import KeyboardLayoutManager
 from ntuh.version import get_version
 
 from gazefollower.ui.UIBackend import PyGameUIBackend as _PyGameUIBackend
@@ -594,6 +595,13 @@ def main():
     except Exception:
         pass
 
+    # [FIX] Switch keyboard to English so keystroke controls (q, SPACE) work regardless
+    # of IME state; restore on exit. atexit guarantees restore even on crash / sys.exit.
+    import atexit
+    kb_manager = KeyboardLayoutManager()
+    kb_manager.switch_to_english()
+    atexit.register(kb_manager.restore)
+
     logging.basicConfig(level=logging.INFO)
 
     # 初始化 gazefollower 的 logger（一定要先呼叫）
@@ -673,6 +681,9 @@ def main():
         pass
     if completed:
         messagebox.showinfo("Done", f"Calibration saved to:\n{profile_dir}")
+
+    # [FIX] Restore original keyboard layout on exit (atexit is the backstop).
+    kb_manager.restore()
 
 if __name__ == "__main__":
     main()

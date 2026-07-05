@@ -49,6 +49,14 @@ hiddenimports = [
     'matplotlib.backends.backend_agg',
 ]
 
+# Shared NTUH library (calibration.py reuses ntuh.common + ntuh.version). Scope the
+# collect to ntuh.common so we do not drag the replayer's PyQt6 / Sol's ganzin SDK
+# subpackages into this build; ntuh.version is picked up by calibration.py's static import.
+try:
+    hiddenimports += collect_submodules('ntuh.common')
+except Exception:
+    pass
+
 # ===================== Data files =====================
 datas = []
 try:

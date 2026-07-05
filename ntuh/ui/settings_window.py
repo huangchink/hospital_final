@@ -26,6 +26,7 @@ from gazefollower.camera import WebCamCamera
 from recorder import Recorder
 from ntuh.common.app_env import APP_DIR, LAST_SETTINGS_FILE
 from ntuh.common.optics import px_to_cm, screen_width_deg_from_cm
+from ntuh.version import get_version
 from ntuh.common.pygame_utils import ensure_pygame_focus
 from ntuh.common.win_monitors import get_monitor_info_windows
 from ntuh.ui.face_overlay import (
@@ -72,7 +73,7 @@ except ImportError:
 class SettingsWindow(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Eye Tracking Test Settings")
+        self.title(f"Eye Tracking Test Settings (v{get_version('VA_center_opt')})")
         self.resizable(True, True)
         self.minsize(600, 400)  # Ensure buttons always visible
 

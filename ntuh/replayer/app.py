@@ -26,11 +26,12 @@ from ntuh.replayer.widgets.video_display import VideoDisplayWidget
 from ntuh.replayer.widgets.timeline import TimelineWidget
 from ntuh.replayer.widgets.transport import TransportControls
 from ntuh.replayer.widgets.config_panel import ConfigPanel
+from ntuh.version import get_version
 
 class ReplayerApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("NTUH Eye Tracking Replayer")
+        self.setWindowTitle(f"NTUH Eye Tracking Replayer (v{get_version('replayer')})")
         self.resize(1400, 800)
 
         # Engine

@@ -29,8 +29,12 @@ import pickle
 import base64
 
 # Offset modes
-OFFSET_MODE_PIXEL = 'pixel'      # Legacy pixel-based offset (NOT head-tilt immune)
-OFFSET_MODE_ANGULAR = 'angular'  # Angular offset (head-tilt immune)
+OFFSET_MODE_PIXEL = 'pixel'      # Legacy pixel-based offset in CAMERA space, BEFORE the homography
+                                 # (NOT homography-change immune - drifts when the homography moves)
+OFFSET_MODE_ANGULAR = 'angular'  # Angular offset (camera space; still homography-anchored)
+OFFSET_MODE_SCREEN = 'screen'    # Offset in SCREEN space, applied AFTER the homography. Immune to
+                                 # homography drift: the residual is the gaze sensor's bias in screen
+                                 # space, which stays valid as long as the homography is ~accurate.
 
 
 # Fallback calibration positions (used when marker positions are not available)
@@ -52,6 +56,18 @@ CALIBRATION_POSITIONS_2D_5 = [
     ("upper-right", 0.85, 0.22),
     ("lower-right", 0.85, 0.78),
     ("lower-left", 0.15, 0.78),
+]
+
+CALIBRATION_POSITIONS_2D_9 = [
+    ("center", 0.5, 0.5),
+    ("upper-left", 0.15, 0.22),
+    ("upper-center", 0.5, 0.22),
+    ("upper-right", 0.85, 0.22),
+    ("left", 0.15, 0.5),
+    ("right", 0.85, 0.5),
+    ("lower-left", 0.15, 0.78),
+    ("lower-center", 0.5, 0.78),
+    ("lower-right", 0.85, 0.78),
 ]
 
 # Default (backward compatibility)
@@ -150,6 +166,24 @@ def compute_safe_calibration_positions(screen_w, screen_h, marker_positions_px,
             ("right", safe_right, center_y),
         ]
         push_dirs = {"left": (1, 0), "center": (0, 0), "right": (-1, 0)}
+    elif num_points == 9:
+        desired = [
+            ("center", center_x, center_y),
+            ("upper-left", safe_left, safe_top),
+            ("upper-center", center_x, safe_top),
+            ("upper-right", safe_right, safe_top),
+            ("left", safe_left, center_y),
+            ("right", safe_right, center_y),
+            ("lower-left", safe_left, safe_bottom),
+            ("lower-center", center_x, safe_bottom),
+            ("lower-right", safe_right, safe_bottom),
+        ]
+        push_dirs = {
+            "center": (0, 0),
+            "upper-left": (1, 1), "upper-center": (0, 1), "upper-right": (-1, 1),
+            "left": (1, 0), "right": (-1, 0),
+            "lower-left": (1, -1), "lower-center": (0, -1), "lower-right": (-1, -1),
+        }
     else:
         desired = [
             ("center", center_x, center_y),
@@ -895,7 +929,7 @@ class Sol2DOffsetCalibrator:
 
     def __init__(self, target_image_path, screen_width, screen_height,
                  num_points=5, target_display_size=100,
-                 offset_mode=OFFSET_MODE_PIXEL, camera_matrix=None):
+                 offset_mode=OFFSET_MODE_SCREEN, camera_matrix=None):
         """
         Initialize the calibrator.
 
@@ -911,13 +945,15 @@ class Sol2DOffsetCalibrator:
         self.target_image_path = target_image_path
         self.screen_width = screen_width
         self.screen_height = screen_height
-        # Snap to valid point counts: 1, 3, or 5
+        # Snap to valid point counts: 1, 3, 5, or 9
         if num_points <= 1:
             self.num_points = 1
         elif num_points <= 3:
             self.num_points = 3
-        else:
+        elif num_points <= 5:
             self.num_points = 5
+        else:
+            self.num_points = 9
         self.target_display_size = target_display_size
         self.offset_mode = offset_mode
         self.camera_matrix = camera_matrix
@@ -952,8 +988,10 @@ class Sol2DOffsetCalibrator:
             self.positions = CALIBRATION_POSITIONS_2D_1
         elif self.num_points == 3:
             self.positions = CALIBRATION_POSITIONS_2D_3
-        else:
+        elif self.num_points == 5:
             self.positions = CALIBRATION_POSITIONS_2D_5
+        else:
+            self.positions = CALIBRATION_POSITIONS_2D_9
 
         mode_str = f"mode={offset_mode}"
         if camera_matrix is not None:
@@ -1042,6 +1080,36 @@ class Sol2DOffsetCalibrator:
               f"camera_pos=({target_pos_camera[0]:.1f}, {target_pos_camera[1]:.1f})")
         print(f"    gaze_2d=({gaze_2d[0]:.1f}, {gaze_2d[1]:.1f})")
         print(f"    offset=({gaze_2d[0] - target_pos_camera[0]:.1f}, {gaze_2d[1] - target_pos_camera[1]:.1f})")
+
+        self.current_point_index += 1
+
+        if self.current_point_index >= len(self.positions):
+            self.calibration_complete = True
+
+        return True
+
+    def record_calibration_point_screen(self, mapped_gaze_screen, target_screen):
+        """Record a SCREEN-space calibration point: the raw mapped-gaze screen position vs the
+        target screen position. The offset (target - mapped) is learned and later applied in screen
+        space AFTER the homography, so it does NOT drift when the homography changes (head movement).
+        """
+        if self.current_point_index >= len(self.positions):
+            return False
+
+        position_name = self.positions[self.current_point_index][0]
+        mapped_gaze_screen = (float(mapped_gaze_screen[0]), float(mapped_gaze_screen[1]))
+        target_screen = (float(target_screen[0]), float(target_screen[1]))
+
+        # Stored as (input=mapped_gaze_screen, target=target_screen); train() computes
+        # offset = target - input (screen px) and IDW interpolates in screen space.
+        self.model.add_calibration_point(mapped_gaze_screen, target_screen, position_name)
+
+        print(f"[Sol2DCalibrator] Recorded point {self.current_point_index + 1}/{len(self.positions)}: "
+              f"{position_name}")
+        print(f"    target_screen=({target_screen[0]:.1f}, {target_screen[1]:.1f})  "
+              f"mapped_gaze_screen=({mapped_gaze_screen[0]:.1f}, {mapped_gaze_screen[1]:.1f})")
+        print(f"    screen_offset=({target_screen[0] - mapped_gaze_screen[0]:.1f}, "
+              f"{target_screen[1] - mapped_gaze_screen[1]:.1f})")
 
         self.current_point_index += 1
 

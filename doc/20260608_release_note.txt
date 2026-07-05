@@ -1,0 +1,58 @@
+==============================================================================
+ NTUH Eye-Tracking Suite - Release Notes
+ Build date: 2026-06-08
+==============================================================================
+
+This release builds on the 2026-06-07 build (same three programs:
+VA_center_opt.exe, calibration.exe, replayer.exe). How to run, where data is
+saved, and the per-participant workflow are UNCHANGED - see
+20260607_release_note.txt in this folder for those. Below are only the changes
+since 2026-06-07.
+
+------------------------------------------------------------------------------
+ WHAT'S NEW / CHANGED SINCE 2026-06-07
+------------------------------------------------------------------------------
+Sol 2D offset calibration  (VA_center_opt - "Sol Calib" tab)
+  - The offset correction is now computed in SCREEN space (applied AFTER the
+    ArUco homography) instead of camera space. This fixes the gaze drift that
+    came back after re-opening the gaze preview or starting a test: the
+    correction no longer depends on the exact head pose / homography that was
+    present at the moment of calibration.
+      -> Re-calibrate once after upgrading. Old calibration files still load,
+         but re-run the 2D calibration to get the new (drift-free) behaviour.
+  - New 9-point calibration mode, in addition to 1 / 3 / 5 points.
+
+New tool: Sol Gaze Accuracy Test  ("Accuracy Test" button, Sol tab)
+  - Measures how good the current calibration actually is. It shows targets in
+    concentric rings (10 deg and 20 deg from centre) plus the four screen
+    corners; fixate each target and press SPACE to advance (ESC / Q aborts).
+  - Reports ACCURACY (gaze error vs. the target, BEFORE and AFTER the offset)
+    and PRECISION (gaze stability / sample spread), in BOTH degrees and pixels,
+    grouped by eccentricity, plus a screen error heatmap.
+  - Saved under:  accuracy_test\<name>_<timestamp>\
+        accuracy_data.csv      per-point raw & corrected error + precision
+        accuracy_report.json   summary by eccentricity + which model was tested
+        accuracy_heatmap.png   error over the screen, before vs. after
+        accuracy_by_angle.png  accuracy & precision by eccentricity (deg & px)
+
+Robustness
+  - Sol gaze preview: the scene-video decode now runs in a SEPARATE worker
+    process. If the Sol SDK's native video decoder crashes, only that worker is
+    affected - it restarts automatically and the program keeps running (gaze
+    briefly holds on the last homography, then resumes) instead of the whole
+    application closing.
+  - VA / VF result screen: "Press Q to Exit" now works even when the tester
+    dashboard window has the keyboard focus.
+
+Under the hood
+  - The source code was reorganized for maintainability (one shared package).
+    No change to how the programs are used or where data is saved.
+
+------------------------------------------------------------------------------
+ NOTES
+------------------------------------------------------------------------------
+- For Sol gaze, test different ArUco marker counts / sizes on the actual screen
+  so the markers do not overlap each other or the stimulus area.
+- Detailed per-program documentation: VA_center_opt.md, calibration.md,
+  replayer.md (in this folder).
+==============================================================================

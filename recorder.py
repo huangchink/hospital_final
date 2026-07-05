@@ -513,3 +513,21 @@ class Recorder:
             try: self.trial_csv_file.close()
             except: pass
         print("Recorder Stopped.")
+
+
+class DummyRecorder:
+    """Dummy recorder for practice mode - does nothing but provides the same interface."""
+
+    def __init__(self, *args, **kwargs):
+        self.frame_count = 0
+        self.running = True  # Mimic real recorder's running flag
+
+    def process_and_record(self, *args, **kwargs):
+        self.frame_count += 1
+
+    def log_trial_event(self, *args, **kwargs):
+        pass
+
+    def close(self):
+        self.running = False
+        print("[Practice Mode] DummyRecorder closed (no data recorded)")

@@ -23,11 +23,11 @@ DIST = os.path.join(ROOT, "dist")
 #   make_dirs  : writable folders to create empty
 PLAN = {
     "VA_center_opt": {
-        "copy_dirs": [os.path.join("calibration_profiles", "anonymous_9pt"), "刺激源圖片選擇"],
+        "copy_dirs": [os.path.join("calibration_profiles", "anonymous_9pt"), "stimulus_images"],
         "make_dirs": ["VA_output", "logs"],
     },
     "calibration": {
-        "copy_dirs": [os.path.join("calibration_profiles", "anonymous_9pt"), "校正圖片選擇"],
+        "copy_dirs": [os.path.join("calibration_profiles", "anonymous_9pt"), "calibration_images"],
         "make_dirs": ["calibration_profiles", "logs"],
     },
     "replayer": {  # reads session folders the user opens; nothing to stage
@@ -39,6 +39,7 @@ PLAN = {
 # User-facing documentation, gathered into dist\manual\ so the professor has one
 # place to read how to use each program (the .exe folders stay clean).
 MANUAL_DOCS = [
+    os.path.join("doc", "20260608_release_note.txt"),
     os.path.join("doc", "20260607_release_note.txt"),
     os.path.join("doc", "VA_center_opt.md"),
     os.path.join("doc", "calibration.md"),

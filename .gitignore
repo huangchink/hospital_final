@@ -11,6 +11,7 @@ va_crash_log.txt
 # Output Data
 VA_output/
 VF_output/
+accuracy_test/
 data/
 *.csv
 
@@ -21,6 +22,10 @@ data/
 # User Calibration Data
 calibration_profiles/
 *sol*offset*.json
+
+# Per-machine remembered settings (calibration tool)
+calibration_config.json
+.kb_layout_backup
 
 # Build Artifacts (PyInstaller)
 build/

@@ -74,6 +74,12 @@ try:
 except Exception:
     pass
 
+# Shared NTUH library (extracted from this script during the reorg)
+try:
+    hiddenimports += collect_submodules('ntuh')
+except Exception:
+    pass
+
 # ===================== Data files =====================
 datas = []
 try:
@@ -97,10 +103,10 @@ datas += [
     ('sol_2d_offset_calibration.py', '.'),
 ]
 
-if os.path.exists('校正圖片選擇'):
-    datas += [('校正圖片選擇', '校正圖片選擇')]
-if os.path.exists('刺激源圖片選擇'):
-    datas += [('刺激源圖片選擇', '刺激源圖片選擇')]
+if os.path.exists('calibration_images'):
+    datas += [('calibration_images', 'calibration_images')]
+if os.path.exists('stimulus_images'):
+    datas += [('stimulus_images', 'stimulus_images')]
 if os.path.exists(os.path.join('calibration_profiles', 'anonymous_9pt')):
     datas += [
         (os.path.join('calibration_profiles', 'anonymous_9pt'),

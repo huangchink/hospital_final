@@ -49,6 +49,14 @@ hiddenimports = [
     'matplotlib.backends.backend_agg',
 ]
 
+# Shared NTUH library (calibration.py reuses ntuh.common + ntuh.version). Scope the
+# collect to ntuh.common so we do not drag the replayer's PyQt6 / Sol's ganzin SDK
+# subpackages into this build; ntuh.version is picked up by calibration.py's static import.
+try:
+    hiddenimports += collect_submodules('ntuh.common')
+except Exception:
+    pass
+
 # ===================== Data files =====================
 datas = []
 try:
@@ -62,10 +70,10 @@ except Exception:
 
 datas += [('gazefollower', 'gazefollower')]
 
-if os.path.exists('校正圖片選擇'):
-    datas += [('校正圖片選擇', '校正圖片選擇')]
-if os.path.exists('刺激源圖片選擇'):
-    datas += [('刺激源圖片選擇', '刺激源圖片選擇')]
+if os.path.exists('calibration_images'):
+    datas += [('calibration_images', 'calibration_images')]
+if os.path.exists('stimulus_images'):
+    datas += [('stimulus_images', 'stimulus_images')]
 
 if os.path.exists('calibration_profiles'):
     datas += [('calibration_profiles', 'calibration_profiles')]

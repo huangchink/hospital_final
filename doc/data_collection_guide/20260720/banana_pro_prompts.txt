@@ -1,0 +1,50 @@
+環境架設示意圖 — Banana Pro 2 影像生成提示詞
+====================================================
+用途:生成後插入《資料收集操作手冊》第 3 節的兩個橘色佔位處
+(圖 3-1 側視圖、圖 3-2 正視圖)。建議輸出 16:9、亮色系、乾淨背景。
+
+----------------------------------------------------
+圖 3-1 側視圖 (side view, 60 cm + eye-level annotation)
+----------------------------------------------------
+Clean vector-style illustration, side view, of an ergonomic eye-tracking test
+setup for a child: an elementary school child sitting upright on an adjustable
+chair, wearing lightweight black smart glasses (eye-tracking glasses with thin
+frames, connected by a thin cable to a smartphone lying on the desk), facing a
+27-inch desktop monitor on a height-adjustable stand. The monitor screen center
+is exactly at the child's eye level, indicated with a thin horizontal dashed
+line from the eyes to the screen center. A labeled double-headed arrow between
+the child's eyes and the screen reads "60 cm". Tape marks on the floor under
+the chair legs. Bright, soft indoor lighting, no window glare. Minimal flat
+illustration style, white background, soft blue and gray palette, clear
+annotations, no text other than "60 cm".
+
+(中文說明:側視圖重點 = 60 cm 標註、螢幕中心與眼同高的虛線、椅腳地板膠帶記號)
+
+----------------------------------------------------
+圖 3-2 正視圖 (front view, child wearing Sol glasses)
+----------------------------------------------------
+Clean vector-style illustration, front view slightly from behind the monitor,
+of a smiling elementary school child sitting centered in front of a 27-inch
+monitor, wearing lightweight black eye-tracking smart glasses with thin frames,
+a thin cable running from the glasses' right temple down to a smartphone on the
+desk. The child's body and head face the screen squarely, hands resting on the
+lap, back straight. A researcher (young adult, friendly) sits diagonally behind
+with a laptop, observing. Bright even indoor lighting, curtains closed, tidy
+desk. Minimal flat illustration style, white background, soft blue and gray
+palette, no on-image text.
+
+(中文說明:正視圖重點 = 兒童置中面對螢幕、Sol 眼鏡與連接手機的線、
+施測者在旁用筆電、光線均勻無反光)
+
+----------------------------------------------------
+(備用) 圖:施測者按 SPACE 的雙螢幕配置 (optional)
+----------------------------------------------------
+Clean vector-style illustration, top-down view of a two-screen eye-tracking
+test room layout: a child at one desk facing a 27-inch monitor (gray screen
+with small black-and-white square markers in the corners and a yellow circle
+target in the middle), and a researcher at a second desk behind and to the
+side, with a laptop and a keyboard, pressing the space bar. A dashed line
+labeled "60 cm" between the child and their monitor. Minimal flat illustration
+style, white background, soft blue and gray palette, only the text "60 cm".
+
+(中文說明:俯視配置圖,可視需要生成;顯示受試者/施測者相對位置)

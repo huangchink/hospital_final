@@ -1,0 +1,1364 @@
+{
+ "General": {
+  "win": [
+   68,
+   61,
+   1500,
+   1700
+  ],
+  "grab_origin": [
+   60,
+   53
+  ],
+  "widgets": [
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 78,
+    "y": 1707,
+    "w": 1480,
+    "h": 46
+   },
+   {
+    "class": "TButton",
+    "text": "Start Test",
+    "x": 1403,
+    "y": 1707,
+    "w": 145,
+    "h": 46
+   },
+   {
+    "class": "TButton",
+    "text": "Start Practice",
+    "x": 1234,
+    "y": 1707,
+    "w": 149,
+    "h": 46
+   },
+   {
+    "class": "TSeparator",
+    "text": "",
+    "x": 73,
+    "y": 1697,
+    "w": 1490,
+    "h": 2
+   },
+   {
+    "class": "TNotebook",
+    "text": "",
+    "x": 73,
+    "y": 66,
+    "w": 1490,
+    "h": 1631
+   },
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 74,
+    "y": 98,
+    "w": 1486,
+    "h": 1596
+   },
+   {
+    "class": "Canvas",
+    "text": "",
+    "x": 74,
+    "y": 98,
+    "w": 1469,
+    "h": 1596
+   },
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 74,
+    "y": 98,
+    "w": 1469,
+    "h": 871
+   },
+   {
+    "class": "TLabelframe",
+    "text": "Experiment Type",
+    "x": 84,
+    "y": 103,
+    "w": 1449,
+    "h": 54
+   },
+   {
+    "class": "TLabel",
+    "text": "Select Experiment:",
+    "x": 96,
+    "y": 129,
+    "w": 115,
+    "h": 20
+   },
+   {
+    "class": "TCombobox",
+    "text": "PY_VAR47",
+    "x": 231,
+    "y": 128,
+    "w": 93,
+    "h": 22
+   },
+   {
+    "class": "TLabel",
+    "text": "VA: Visual Acuity (two circles with grating)",
+    "x": 344,
+    "y": 129,
+    "w": 251,
+    "h": 20
+   },
+   {
+    "class": "TLabelframe",
+    "text": "User & Tracker",
+    "x": 84,
+    "y": 167,
+    "w": 1449,
+    "h": 182
+   },
+   {
+    "class": "TLabel",
+    "text": "User Name:",
+    "x": 96,
+    "y": 193,
+    "w": 73,
+    "h": 20
+   },
+   {
+    "class": "TEntry",
+    "text": "PY_VAR1",
+    "x": 347,
+    "y": 192,
+    "w": 146,
+    "h": 22
+   },
+   {
+    "class": "TLabel",
+    "text": "Trackers:",
+    "x": 96,
+    "y": 225,
+    "w": 58,
+    "h": 20
+   },
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 347,
+    "y": 224,
+    "w": 189,
+    "h": 22
+   },
+   {
+    "class": "TCheckbutton",
+    "text": "Webcam",
+    "x": 352,
+    "y": 224,
+    "w": 75,
+    "h": 22
+   },
+   {
+    "class": "TCheckbutton",
+    "text": "Sol Glasses",
+    "x": 437,
+    "y": 224,
+    "w": 94,
+    "h": 22
+   },
+   {
+    "class": "TLabel",
+    "text": "Evaluation Source:",
+    "x": 96,
+    "y": 257,
+    "w": 112,
+    "h": 20
+   },
+   {
+    "class": "TCombobox",
+    "text": "PY_VAR22",
+    "x": 347,
+    "y": 256,
+    "w": 163,
+    "h": 22
+   },
+   {
+    "class": "TCheckbutton",
+    "text": "Show Gaze Marker during Test",
+    "x": 96,
+    "y": 288,
+    "w": 202,
+    "h": 22
+   },
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 96,
+    "y": 320,
+    "w": 678,
+    "h": 22
+   },
+   {
+    "class": "TCheckbutton",
+    "text": "Require stable valid data before each trial",
+    "x": 96,
+    "y": 320,
+    "w": 260,
+    "h": 22
+   },
+   {
+    "class": "TLabel",
+    "text": "min valid %:",
+    "x": 368,
+    "y": 321,
+    "w": 74,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR45",
+    "x": 444,
+    "y": 321,
+    "w": 61,
+    "h": 20
+   },
+   {
+    "class": "TLabel",
+    "text": "(enabled trackers, in the gaze-quality window)",
+    "x": 513,
+    "y": 321,
+    "w": 253,
+    "h": 19
+   },
+   {
+    "class": "TLabelframe",
+    "text": "VA Stimulus",
+    "x": 84,
+    "y": 359,
+    "w": 1449,
+    "h": 178
+   },
+   {
+    "class": "TLabel",
+    "text": "Stimulus Duration (s):",
+    "x": 96,
+    "y": 384,
+    "w": 130,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR5",
+    "x": 246,
+    "y": 384,
+    "w": 89,
+    "h": 21
+   },
+   {
+    "class": "TLabel",
+    "text": "Pass Duration (s):",
+    "x": 96,
+    "y": 415,
+    "w": 109,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR6",
+    "x": 246,
+    "y": 415,
+    "w": 89,
+    "h": 21
+   },
+   {
+    "class": "TLabel",
+    "text": "Blank Duration (s):",
+    "x": 96,
+    "y": 446,
+    "w": 112,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR7",
+    "x": 246,
+    "y": 446,
+    "w": 89,
+    "h": 21
+   },
+   {
+    "class": "TLabel",
+    "text": "Circle Radius (px):",
+    "x": 96,
+    "y": 477,
+    "w": 111,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR8",
+    "x": 246,
+    "y": 477,
+    "w": 89,
+    "h": 21
+   },
+   {
+    "class": "TLabel",
+    "text": "= 8.31 cm radius  (Ø 16.61 cm)",
+    "x": 355,
+    "y": 477,
+    "w": 186,
+    "h": 20
+   },
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 96,
+    "y": 508,
+    "w": 305,
+    "h": 22
+   },
+   {
+    "class": "TCheckbutton",
+    "text": "Rotate Stimulus",
+    "x": 96,
+    "y": 508,
+    "w": 116,
+    "h": 22
+   },
+   {
+    "class": "TLabel",
+    "text": "Speed (deg/s):",
+    "x": 232,
+    "y": 509,
+    "w": 89,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR10",
+    "x": 326,
+    "y": 509,
+    "w": 75,
+    "h": 20
+   },
+   {
+    "class": "TLabelframe",
+    "text": "Colors & Display",
+    "x": 84,
+    "y": 547,
+    "w": 1449,
+    "h": 162
+   },
+   {
+    "class": "TLabel",
+    "text": "Bright Color:",
+    "x": 96,
+    "y": 575,
+    "w": 76,
+    "h": 20
+   },
+   {
+    "class": "TEntry",
+    "text": "PY_VAR12",
+    "x": 227,
+    "y": 574,
+    "w": 111,
+    "h": 22
+   },
+   {
+    "class": "TButton",
+    "text": "Pick",
+    "x": 358,
+    "y": 572,
+    "w": 87,
+    "h": 26
+   },
+   {
+    "class": "TLabel",
+    "text": "Dark Color:",
+    "x": 96,
+    "y": 611,
+    "w": 69,
+    "h": 20
+   },
+   {
+    "class": "TEntry",
+    "text": "PY_VAR13",
+    "x": 227,
+    "y": 610,
+    "w": 111,
+    "h": 22
+   },
+   {
+    "class": "TButton",
+    "text": "Pick",
+    "x": 358,
+    "y": 608,
+    "w": 87,
+    "h": 26
+   },
+   {
+    "class": "TLabel",
+    "text": "Background Color:",
+    "x": 96,
+    "y": 647,
+    "w": 111,
+    "h": 20
+   },
+   {
+    "class": "TEntry",
+    "text": "PY_VAR14",
+    "x": 227,
+    "y": 646,
+    "w": 111,
+    "h": 22
+   },
+   {
+    "class": "TButton",
+    "text": "Pick",
+    "x": 358,
+    "y": 644,
+    "w": 87,
+    "h": 26
+   },
+   {
+    "class": "TCheckbutton",
+    "text": "Paper Color Mode",
+    "x": 96,
+    "y": 680,
+    "w": 127,
+    "h": 22
+   },
+   {
+    "class": "TLabelframe",
+    "text": "Screen & Viewing",
+    "x": 84,
+    "y": 719,
+    "w": 1449,
+    "h": 115
+   },
+   {
+    "class": "TLabel",
+    "text": "Test Screen:",
+    "x": 96,
+    "y": 744,
+    "w": 78,
+    "h": 20
+   },
+   {
+    "class": "TCombobox",
+    "text": "PY_VAR63",
+    "x": 254,
+    "y": 744,
+    "w": 233,
+    "h": 21
+   },
+   {
+    "class": "TLabel",
+    "text": "Screen Width (cm):",
+    "x": 96,
+    "y": 775,
+    "w": 117,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR15",
+    "x": 254,
+    "y": 775,
+    "w": 89,
+    "h": 21
+   },
+   {
+    "class": "TLabel",
+    "text": "Viewing Distance (cm):",
+    "x": 96,
+    "y": 806,
+    "w": 138,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR16",
+    "x": 254,
+    "y": 806,
+    "w": 89,
+    "h": 21
+   },
+   {
+    "class": "TLabelframe",
+    "text": "Inter-trial",
+    "x": 84,
+    "y": 844,
+    "w": 1449,
+    "h": 120
+   },
+   {
+    "class": "TLabel",
+    "text": "Image:",
+    "x": 96,
+    "y": 872,
+    "w": 43,
+    "h": 20
+   },
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 242,
+    "y": 869,
+    "w": 264,
+    "h": 26
+   },
+   {
+    "class": "TEntry",
+    "text": "PY_VAR17",
+    "x": 242,
+    "y": 871,
+    "w": 216,
+    "h": 22
+   },
+   {
+    "class": "TButton",
+    "text": "...",
+    "x": 463,
+    "y": 869,
+    "w": 38,
+    "h": 26
+   },
+   {
+    "class": "TLabel",
+    "text": "Image Duration (s):",
+    "x": 96,
+    "y": 905,
+    "w": 114,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR18",
+    "x": 242,
+    "y": 905,
+    "w": 89,
+    "h": 21
+   },
+   {
+    "class": "TLabel",
+    "text": "Background Hold (s):",
+    "x": 96,
+    "y": 936,
+    "w": 126,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR19",
+    "x": 242,
+    "y": 936,
+    "w": 89,
+    "h": 21
+   },
+   {
+    "class": "TScrollbar",
+    "text": "",
+    "x": 1543,
+    "y": 98,
+    "w": 17,
+    "h": 1596
+   }
+  ]
+ },
+ "Sol": {
+  "win": [
+   68,
+   61,
+   1500,
+   1700
+  ],
+  "grab_origin": [
+   60,
+   53
+  ],
+  "widgets": [
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 78,
+    "y": 1707,
+    "w": 1480,
+    "h": 46
+   },
+   {
+    "class": "TButton",
+    "text": "Start Test",
+    "x": 1403,
+    "y": 1707,
+    "w": 145,
+    "h": 46
+   },
+   {
+    "class": "TButton",
+    "text": "Start Practice",
+    "x": 1234,
+    "y": 1707,
+    "w": 149,
+    "h": 46
+   },
+   {
+    "class": "TSeparator",
+    "text": "",
+    "x": 73,
+    "y": 1697,
+    "w": 1490,
+    "h": 2
+   },
+   {
+    "class": "TNotebook",
+    "text": "",
+    "x": 73,
+    "y": 66,
+    "w": 1490,
+    "h": 1631
+   },
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 74,
+    "y": 98,
+    "w": 1486,
+    "h": 1596
+   },
+   {
+    "class": "Canvas",
+    "text": "",
+    "x": 74,
+    "y": 98,
+    "w": 1469,
+    "h": 1596
+   },
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 74,
+    "y": 98,
+    "w": 1469,
+    "h": 629
+   },
+   {
+    "class": "TLabelframe",
+    "text": "Connection",
+    "x": 84,
+    "y": 103,
+    "w": 1449,
+    "h": 88
+   },
+   {
+    "class": "TLabel",
+    "text": "IP:",
+    "x": 96,
+    "y": 131,
+    "w": 20,
+    "h": 20
+   },
+   {
+    "class": "TEntry",
+    "text": "PY_VAR23",
+    "x": 136,
+    "y": 130,
+    "w": 146,
+    "h": 22
+   },
+   {
+    "class": "TLabel",
+    "text": "Port:",
+    "x": 302,
+    "y": 131,
+    "w": 32,
+    "h": 20
+   },
+   {
+    "class": "TEntry",
+    "text": "PY_VAR24",
+    "x": 354,
+    "y": 130,
+    "w": 62,
+    "h": 22
+   },
+   {
+    "class": "TButton",
+    "text": "Connect",
+    "x": 436,
+    "y": 128,
+    "w": 87,
+    "h": 26
+   },
+   {
+    "class": "TLabel",
+    "text": "Not Connected",
+    "x": 264,
+    "y": 164,
+    "w": 90,
+    "h": 20
+   },
+   {
+    "class": "TLabelframe",
+    "text": "Marker Calibration",
+    "x": 84,
+    "y": 201,
+    "w": 1449,
+    "h": 83
+   },
+   {
+    "class": "TLabel",
+    "text": "Markers (HxV):",
+    "x": 103,
+    "y": 226,
+    "w": 92,
+    "h": 20
+   },
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 358,
+    "y": 235,
+    "w": 1,
+    "h": 1
+   },
+   {
+    "class": "TLabel",
+    "text": "Markers (HxV):",
+    "x": 103,
+    "y": 226,
+    "w": 92,
+    "h": 20
+   },
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 299,
+    "y": 226,
+    "w": 119,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR25",
+    "x": 299,
+    "y": 226,
+    "w": 54,
+    "h": 20
+   },
+   {
+    "class": "TLabel",
+    "text": "x",
+    "x": 353,
+    "y": 226,
+    "w": 11,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR26",
+    "x": 364,
+    "y": 226,
+    "w": 54,
+    "h": 20
+   },
+   {
+    "class": "TLabel",
+    "text": "Pattern Size (px):",
+    "x": 96,
+    "y": 256,
+    "w": 106,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR27",
+    "x": 222,
+    "y": 256,
+    "w": 75,
+    "h": 20
+   },
+   {
+    "class": "TLabel",
+    "text": "Dict:",
+    "x": 317,
+    "y": 256,
+    "w": 31,
+    "h": 20
+   },
+   {
+    "class": "TCombobox",
+    "text": "PY_VAR28",
+    "x": 368,
+    "y": 256,
+    "w": 128,
+    "h": 21
+   },
+   {
+    "class": "TLabelframe",
+    "text": "Gaze Mapping Method",
+    "x": 84,
+    "y": 294,
+    "w": 1449,
+    "h": 116
+   },
+   {
+    "class": "TLabel",
+    "text": "Method:",
+    "x": 97,
+    "y": 322,
+    "w": 51,
+    "h": 20
+   },
+   {
+    "class": "TCombobox",
+    "text": "PY_VAR31",
+    "x": 170,
+    "y": 321,
+    "w": 163,
+    "h": 21
+   },
+   {
+    "class": "TLabel",
+    "text": "3D: Ray-plane intersection (uses gaze_3d)",
+    "x": 96,
+    "y": 355,
+    "w": 238,
+    "h": 19
+   },
+   {
+    "class": "TLabel",
+    "text": "2D: Homography mapping (uses gaze_2d)",
+    "x": 96,
+    "y": 384,
+    "w": 238,
+    "h": 19
+   },
+   {
+    "class": "TButton",
+    "text": "Clear Homography Cache",
+    "x": 354,
+    "y": 319,
+    "w": 158,
+    "h": 26
+   },
+   {
+    "class": "TLabelframe",
+    "text": "Smoothing",
+    "x": 84,
+    "y": 420,
+    "w": 1449,
+    "h": 52
+   },
+   {
+    "class": "TLabel",
+    "text": "Pose Smooth Factor:",
+    "x": 96,
+    "y": 445,
+    "w": 128,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR29",
+    "x": 244,
+    "y": 445,
+    "w": 75,
+    "h": 20
+   },
+   {
+    "class": "TLabel",
+    "text": "Gaze Smooth Factor:",
+    "x": 339,
+    "y": 445,
+    "w": 129,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR30",
+    "x": 488,
+    "y": 445,
+    "w": 75,
+    "h": 20
+   },
+   {
+    "class": "TLabelframe",
+    "text": "Gaze Quality Monitor (Tester)",
+    "x": 84,
+    "y": 482,
+    "w": 1449,
+    "h": 82
+   },
+   {
+    "class": "TLabel",
+    "text": "Quality Window (s):",
+    "x": 96,
+    "y": 507,
+    "w": 118,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR32",
+    "x": 307,
+    "y": 507,
+    "w": 75,
+    "h": 21
+   },
+   {
+    "class": "TLabel",
+    "text": "Rolling window for the live missing-data-rate shown on the tester dashboard during the test.",
+    "x": 96,
+    "y": 538,
+    "w": 505,
+    "h": 19
+   },
+   {
+    "class": "TLabelframe",
+    "text": "Preview Gaze Mapping",
+    "x": 84,
+    "y": 574,
+    "w": 1449,
+    "h": 148
+   },
+   {
+    "class": "TLabel",
+    "text": "Test Sol gaze projection on screen with ArUco markers.",
+    "x": 96,
+    "y": 599,
+    "w": 327,
+    "h": 20
+   },
+   {
+    "class": "TLabel",
+    "text": "Screen:",
+    "x": 96,
+    "y": 629,
+    "w": 49,
+    "h": 20
+   },
+   {
+    "class": "TCombobox",
+    "text": "PY_VAR65",
+    "x": 205,
+    "y": 629,
+    "w": 268,
+    "h": 21
+   },
+   {
+    "class": "TButton",
+    "text": "Preview Gaze",
+    "x": 96,
+    "y": 660,
+    "w": 89,
+    "h": 26
+   },
+   {
+    "class": "TLabel",
+    "text": "(Connect Sol glasses first)",
+    "x": 205,
+    "y": 663,
+    "w": 157,
+    "h": 20
+   },
+   {
+    "class": "TButton",
+    "text": "Accuracy Test",
+    "x": 382,
+    "y": 660,
+    "w": 94,
+    "h": 26
+   },
+   {
+    "class": "TLabel",
+    "text": "Press Q or ESC to exit preview",
+    "x": 96,
+    "y": 696,
+    "w": 170,
+    "h": 19
+   },
+   {
+    "class": "TScrollbar",
+    "text": "",
+    "x": 1543,
+    "y": 98,
+    "w": 17,
+    "h": 1596
+   }
+  ]
+ },
+ "Sol Calib": {
+  "win": [
+   68,
+   61,
+   1500,
+   1700
+  ],
+  "grab_origin": [
+   60,
+   53
+  ],
+  "widgets": [
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 78,
+    "y": 1707,
+    "w": 1480,
+    "h": 46
+   },
+   {
+    "class": "TButton",
+    "text": "Start Test",
+    "x": 1403,
+    "y": 1707,
+    "w": 145,
+    "h": 46
+   },
+   {
+    "class": "TButton",
+    "text": "Start Practice",
+    "x": 1234,
+    "y": 1707,
+    "w": 149,
+    "h": 46
+   },
+   {
+    "class": "TSeparator",
+    "text": "",
+    "x": 73,
+    "y": 1697,
+    "w": 1490,
+    "h": 2
+   },
+   {
+    "class": "TNotebook",
+    "text": "",
+    "x": 73,
+    "y": 66,
+    "w": 1490,
+    "h": 1631
+   },
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 74,
+    "y": 98,
+    "w": 1486,
+    "h": 1596
+   },
+   {
+    "class": "Canvas",
+    "text": "",
+    "x": 74,
+    "y": 98,
+    "w": 1469,
+    "h": 1596
+   },
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 74,
+    "y": 98,
+    "w": 1469,
+    "h": 693
+   },
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 84,
+    "y": 103,
+    "w": 1449,
+    "h": 23
+   },
+   {
+    "class": "TLabel",
+    "text": "Current Gaze Method:",
+    "x": 84,
+    "y": 104,
+    "w": 132,
+    "h": 20
+   },
+   {
+    "class": "TLabel",
+    "text": "2D",
+    "x": 226,
+    "y": 103,
+    "w": 25,
+    "h": 23
+   },
+   {
+    "class": "TLabel",
+    "text": "(Set in Sol Settings tab)",
+    "x": 261,
+    "y": 105,
+    "w": 132,
+    "h": 19
+   },
+   {
+    "class": "TLabelframe",
+    "text": "Calibration Settings",
+    "x": 84,
+    "y": 136,
+    "w": 1449,
+    "h": 150
+   },
+   {
+    "class": "TLabel",
+    "text": "Target Image:",
+    "x": 96,
+    "y": 164,
+    "w": 83,
+    "h": 20
+   },
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 226,
+    "y": 161,
+    "w": 383,
+    "h": 26
+   },
+   {
+    "class": "TEntry",
+    "text": "PY_VAR59",
+    "x": 226,
+    "y": 163,
+    "w": 286,
+    "h": 22
+   },
+   {
+    "class": "TButton",
+    "text": "Browse...",
+    "x": 517,
+    "y": 161,
+    "w": 87,
+    "h": 26
+   },
+   {
+    "class": "TLabel",
+    "text": "Target Size (px):",
+    "x": 96,
+    "y": 197,
+    "w": 100,
+    "h": 20
+   },
+   {
+    "class": "TSpinbox",
+    "text": "PY_VAR60",
+    "x": 226,
+    "y": 197,
+    "w": 89,
+    "h": 20
+   },
+   {
+    "class": "TLabel",
+    "text": "Calibration Points:",
+    "x": 96,
+    "y": 227,
+    "w": 110,
+    "h": 20
+   },
+   {
+    "class": "TCombobox",
+    "text": "PY_VAR61",
+    "x": 226,
+    "y": 227,
+    "w": 93,
+    "h": 21
+   },
+   {
+    "class": "TLabel",
+    "text": "Offset Mode:",
+    "x": 96,
+    "y": 258,
+    "w": 78,
+    "h": 20
+   },
+   {
+    "class": "TCombobox",
+    "text": "PY_VAR62",
+    "x": 226,
+    "y": 258,
+    "w": 205,
+    "h": 21
+   },
+   {
+    "class": "TLabelframe",
+    "text": "Display Settings",
+    "x": 84,
+    "y": 296,
+    "w": 1449,
+    "h": 84
+   },
+   {
+    "class": "TLabel",
+    "text": "User Screen:",
+    "x": 96,
+    "y": 321,
+    "w": 80,
+    "h": 20
+   },
+   {
+    "class": "TCombobox",
+    "text": "PY_VAR63",
+    "x": 205,
+    "y": 321,
+    "w": 303,
+    "h": 21
+   },
+   {
+    "class": "TLabel",
+    "text": "Tester Screen:",
+    "x": 96,
+    "y": 352,
+    "w": 89,
+    "h": 20
+   },
+   {
+    "class": "TCombobox",
+    "text": "PY_VAR64",
+    "x": 205,
+    "y": 352,
+    "w": 303,
+    "h": 21
+   },
+   {
+    "class": "TLabelframe",
+    "text": "Current Offset Status",
+    "x": 84,
+    "y": 390,
+    "w": 1449,
+    "h": 112
+   },
+   {
+    "class": "TLabel",
+    "text": "3D Offset:",
+    "x": 96,
+    "y": 415,
+    "w": 64,
+    "h": 20
+   },
+   {
+    "class": "TLabel",
+    "text": "Pitch: --",
+    "x": 180,
+    "y": 415,
+    "w": 50,
+    "h": 20
+   },
+   {
+    "class": "TLabel",
+    "text": "Yaw: --",
+    "x": 284,
+    "y": 415,
+    "w": 45,
+    "h": 20
+   },
+   {
+    "class": "TLabel",
+    "text": "2D Offset:",
+    "x": 96,
+    "y": 445,
+    "w": 64,
+    "h": 20
+   },
+   {
+    "class": "TLabel",
+    "text": "Not calibrated",
+    "x": 180,
+    "y": 445,
+    "w": 84,
+    "h": 20
+   },
+   {
+    "class": "TLabel",
+    "text": "",
+    "x": 284,
+    "y": 445,
+    "w": 4,
+    "h": 20
+   },
+   {
+    "class": "TLabel",
+    "text": "Last Calibrated: Never",
+    "x": 96,
+    "y": 475,
+    "w": 131,
+    "h": 20
+   },
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 84,
+    "y": 517,
+    "w": 1449,
+    "h": 26
+   },
+   {
+    "class": "TButton",
+    "text": "Start Calibration",
+    "x": 89,
+    "y": 517,
+    "w": 103,
+    "h": 26
+   },
+   {
+    "class": "TButton",
+    "text": "Clear Offset",
+    "x": 202,
+    "y": 517,
+    "w": 87,
+    "h": 26
+   },
+   {
+    "class": "TLabel",
+    "text": "(Connect Sol glasses first)",
+    "x": 304,
+    "y": 520,
+    "w": 157,
+    "h": 20
+   },
+   {
+    "class": "TFrame",
+    "text": "",
+    "x": 84,
+    "y": 558,
+    "w": 1449,
+    "h": 22
+   },
+   {
+    "class": "TCheckbutton",
+    "text": "Show gaze during calibration (green circle on user screen)",
+    "x": 84,
+    "y": 558,
+    "w": 358,
+    "h": 22
+   },
+   {
+    "class": "TLabelframe",
+    "text": "Instructions",
+    "x": 84,
+    "y": 590,
+    "w": 1449,
+    "h": 196
+   },
+   {
+    "class": "TLabel",
+    "text": "1. Connect Sol glasses in 'Sol Settings' tab and select Gaze Method (2D/3D).\n2. Select a target image above.\n3. Click 'Start Calibration' - target appears on user screen.\n4. Have user look at each target. Press SPACE when gaze is stable.\n5. Repeat for all calibration points.\n\n• 3D Method: Corrects angular offset (pitch/yaw) in camera frame.\n• 2D Method: Uses IDW/constant offset for position-dependent correction.\n\nControls: SPACE = Record point, Q = Cancel",
+    "x": 96,
+    "y": 615,
+    "w": 452,
+    "h": 164
+   },
+   {
+    "class": "TScrollbar",
+    "text": "",
+    "x": 1543,
+    "y": 98,
+    "w": 17,
+    "h": 1596
+   }
+  ]
+ }
+}

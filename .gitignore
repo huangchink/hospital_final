@@ -31,3 +31,6 @@ calibration_config.json
 build/
 dist/
 *.egg-info/
+
+# Release archives (compressed dist/ for handoff)
+release/

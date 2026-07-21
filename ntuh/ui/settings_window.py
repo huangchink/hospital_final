@@ -2408,10 +2408,14 @@ Controls: SPACE = Record point, Q = Cancel"""
             self.btn_practice.configure(state="disabled")
 
     def run_sol_accuracy_test(self):
-        """Interactive Sol gaze ACCURACY + PRECISION test. Shows concentric-ring + corner targets;
-        the operator fixates each and presses SPACE. Measures error BEFORE and AFTER the loaded 2D
-        offset, plus gaze precision (sample stability). Saves CSV/JSON + heatmap & by-angle PNGs
-        under accuracy_test/. Uses the isolated (crash-safe) scene worker, like the preview."""
+        """Interactive Sol gaze ACCURACY + PRECISION test. Shows concentric-ring + corner targets on
+        the subject's screen; the subject fixates each target and the operator presses SPACE. When a
+        separate tester monitor is configured, an operator-only monitoring window (a schematic of the
+        subject's screen with the target and the live gaze dot + offset) is shown there, so the
+        operator can confirm the subject is fixating BEFORE recording; it is kept off the subject's
+        screen so the dot cannot be chased (which would bias the measurement). Measures error BEFORE
+        and AFTER the loaded 2D offset, plus gaze precision (sample stability). Saves CSV/JSON +
+        heatmap & by-angle PNGs under accuracy_test/. Uses the isolated (crash-safe) scene worker."""
         if not self.is_sol_connected:
             messagebox.showerror("Error", "Sol glasses not connected.")
             return
@@ -2443,6 +2447,19 @@ Controls: SPACE = Record point, Q = Cancel"""
         screen = monitors[screen_idx]
         screen_w, screen_h = screen['width'], screen['height']
         screen_x, screen_y = screen.get('x', 0), screen.get('y', 0)
+
+        # Tester (operator) monitor: a monitoring window that mirrors the user screen with the live
+        # gaze dot, so the operator can tell whether the subject is fixating the target BEFORE
+        # recording. Deliberately kept OFF the subject's screen so they cannot chase the dot (which
+        # would bias the accuracy measurement). Reuses the calib's tester-screen selector.
+        try:
+            tester_idx = int(self.sol_offset_tester_screen_var.get().split(':')[0].strip())
+        except Exception:
+            tester_idx = 1
+        if tester_idx >= len(monitors):
+            tester_idx = 0
+        dual_screen = (tester_idx != screen_idx) and len(monitors) > 1
+        tester_mon = monitors[tester_idx] if dual_screen else None
 
         sol_cfg_for_assets = {
             'marker_k': self.safe_get_int(self.sol_marker_k_var, 6),
@@ -2526,6 +2543,18 @@ Controls: SPACE = Record point, Q = Cancel"""
                 _u32.AttachThreadInput(_fg, _ours, False)
         except Exception as _e:
             print(f"[Accuracy] could not bring window to front: {_e}")
+
+        # Operator monitoring window on the tester screen (OpenCV, like the 2D calib tester view).
+        tester_win_name = "Tester View - Sol Accuracy Test"
+        if dual_screen:
+            try:
+                cv2.namedWindow(tester_win_name, cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(tester_win_name, 900, 640)
+                cv2.moveWindow(tester_win_name, int(tester_mon.get('x', 0)) + 50, int(tester_mon.get('y', 0)) + 50)
+            except Exception as _e:
+                print(f"[Accuracy] could not create tester window: {_e}")
+                dual_screen = False
+
         clock = pygame.time.Clock()
         font = pygame.font.SysFont(None, 40)
         small = pygame.font.SysFont(None, 28)
@@ -2553,7 +2582,78 @@ Controls: SPACE = Record point, Q = Cancel"""
         running = True
         aborted = False
 
-        print(f"[Accuracy] {len(targets)} targets. Fixate each target and press SPACE; ESC/Q aborts.")
+        # Focus-independent SPACE/Q detection so the controls still work when the operator has
+        # clicked the tester window (which then holds the OS keyboard focus, not the pygame window).
+        _prev_space_async = _prev_q_async = False
+        try:
+            _u32_keys = ctypes.windll.user32
+        except Exception:
+            _u32_keys = None
+
+        def build_tester_canvas(tgt, corr_pt, raw_pt, hom, collecting_now, n_collected):
+            """Operator monitoring canvas: a scaled schematic of the USER screen with the target
+            (red), the live offset-corrected gaze (green), the raw gaze (gray), and the live
+            target->gaze offset in px/deg. Drawn from screen-space data (no camera frame needed,
+            so it works with the isolated crash-safe scene worker)."""
+            CW, CH = 900, 640
+            canvas = np.full((CH, CW, 3), 30, dtype=np.uint8)
+            top_h, bot_h, mrg = 74, 44, 30
+            box_x0, box_y0, box_x1, box_y1 = mrg, top_h + 6, CW - mrg, CH - bot_h - 6
+            avail_w, avail_h = box_x1 - box_x0, box_y1 - box_y0
+            scale = min(avail_w / float(screen_w), avail_h / float(screen_h))
+            rect_w, rect_h = int(screen_w * scale), int(screen_h * scale)
+            rect_x = box_x0 + (avail_w - rect_w) // 2
+            rect_y = box_y0 + (avail_h - rect_h) // 2
+            sx = lambda x: int(rect_x + x * scale)
+            sy = lambda y: int(rect_y + y * scale)
+            # user-screen rectangle
+            cv2.rectangle(canvas, (rect_x, rect_y), (rect_x + rect_w, rect_y + rect_h), (70, 70, 80), -1)
+            cv2.rectangle(canvas, (rect_x, rect_y), (rect_x + rect_w, rect_y + rect_h), (150, 150, 150), 1)
+            # target (red) with crosshair
+            tgx, tgy = sx(tgt['x']), sy(tgt['y'])
+            cv2.circle(canvas, (tgx, tgy), 13, (0, 0, 255), 2)
+            cv2.drawMarker(canvas, (tgx, tgy), (0, 0, 255), cv2.MARKER_CROSS, 26, 2)
+            # raw gaze (dim gray)
+            if raw_pt is not None and np.isfinite(raw_pt[0]) and np.isfinite(raw_pt[1]):
+                cv2.circle(canvas, (sx(raw_pt[0]), sy(raw_pt[1])), 6, (120, 120, 120), 1)
+            # corrected gaze (green) + offset line/label
+            if corr_pt is not None and np.isfinite(corr_pt[0]) and np.isfinite(corr_pt[1]):
+                ggx, ggy = sx(corr_pt[0]), sy(corr_pt[1])
+                cv2.line(canvas, (tgx, tgy), (ggx, ggy), (0, 220, 220), 1)
+                cv2.circle(canvas, (ggx, ggy), 10, (0, 220, 0), 2)
+                cv2.circle(canvas, (ggx, ggy), 3, (0, 220, 0), -1)
+                err_px = float(np.hypot(corr_pt[0] - tgt['x'], corr_pt[1] - tgt['y']))
+                err_deg = acc.px_to_deg(err_px, view_dist_cm, screen_w, screen_width_cm)
+                cv2.putText(canvas, f"offset {err_px:.0f}px / {err_deg:.2f}deg",
+                            (min(ggx, tgx), max(top_h + 24, min(ggy, tgy) - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 220), 1, cv2.LINE_AA)
+            else:
+                cv2.putText(canvas, "no gaze on screen", (rect_x + 8, rect_y + 24),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (120, 120, 200), 1, cv2.LINE_AA)
+            # top bar
+            cv2.rectangle(canvas, (0, 0), (CW, top_h), (45, 45, 45), -1)
+            cv2.putText(canvas, f"Accuracy Test - point {idx + 1}/{len(targets)}  "
+                                f"({tgt['name']}, {tgt['ecc_deg']:.0f}deg)",
+                        (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.64, (255, 255, 255), 2, cv2.LINE_AA)
+            hom_col = {"LIVE": (100, 255, 100), "CACHED": (100, 255, 255)}.get(hom, (100, 100, 255))
+            cv2.putText(canvas, f"Homography: {hom}", (12, 58),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.56, hom_col, 1, cv2.LINE_AA)
+            if collecting_now:
+                s2, s2col = f"COLLECTING {n_collected}/{SAMPLES} - subject must hold fixation", (0, 255, 255)
+            elif hom in ("LIVE", "CACHED"):
+                s2, s2col = "READY - when the subject fixates the red target, press SPACE", (200, 255, 200)
+            else:
+                s2, s2col = "waiting for ArUco markers (LIVE/CACHED)...", (150, 150, 255)
+            cv2.putText(canvas, s2, (210, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.54, s2col, 1, cv2.LINE_AA)
+            # legend + controls
+            cv2.putText(canvas, "red = target   green = subject gaze   gray = raw",
+                        (12, CH - bot_h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (180, 180, 180), 1, cv2.LINE_AA)
+            cv2.putText(canvas, "SPACE = record    Q/ESC = abort",
+                        (CW - 320, CH - bot_h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA)
+            return canvas
+
+        print(f"[Accuracy] {len(targets)} targets. Subject fixates each target; operator presses "
+              f"SPACE (watch the tester view). ESC/Q aborts.")
         try:
             while running and idx < len(targets):
                 try:
@@ -2562,17 +2662,31 @@ Controls: SPACE = Record point, Q = Cancel"""
                 except Exception:
                     break
 
+                space_pressed = False
                 for ev in pygame.event.get():
                     if ev.type == pygame.QUIT:
                         running = False; aborted = True
                     elif ev.type == pygame.KEYDOWN:
                         if ev.key in (pygame.K_q, pygame.K_ESCAPE):
                             running = False; aborted = True
-                        elif ev.key == pygame.K_SPACE and not collecting:
-                            if sol_projector.is_homography_valid():
-                                collecting = True; raw_samples, corr_samples = [], []
-                            else:
-                                print("[Accuracy] homography not ready; wait for LIVE/CACHED")
+                        elif ev.key == pygame.K_SPACE:
+                            space_pressed = True
+
+                # Focus-independent SPACE/Q (works even when the tester window has focus).
+                if _u32_keys is not None:
+                    _sd = bool(_u32_keys.GetAsyncKeyState(0x20) & 0x8000)
+                    _qd = bool(_u32_keys.GetAsyncKeyState(0x51) & 0x8000)
+                    if _sd and not _prev_space_async:
+                        space_pressed = True
+                    if _qd and not _prev_q_async:
+                        running = False; aborted = True
+                    _prev_space_async, _prev_q_async = _sd, _qd
+
+                if space_pressed and not collecting and running:
+                    if sol_projector.is_homography_valid():
+                        collecting = True; raw_samples, corr_samples = [], []
+                    else:
+                        print("[Accuracy] homography not ready; wait for LIVE/CACHED")
 
                 for g in sol_client.drain_gaze():
                     latest_gaze = g
@@ -2600,16 +2714,22 @@ Controls: SPACE = Record point, Q = Cancel"""
                     running = False; aborted = True
 
                 tgt = targets[idx]
-                if collecting and latest_gaze is not None:
+
+                # Live gaze -> screen (raw + offset-corrected), computed every frame so the tester
+                # view can show where the subject is looking right now (not only while recording).
+                live_raw = live_corr = None
+                if latest_gaze is not None:
                     try:
                         if hasattr(latest_gaze.combined, 'gaze_2d'):
                             g2d = latest_gaze.combined.gaze_2d
-                            raw_s, corr_s = acc.map_raw_and_corrected(
+                            live_raw, live_corr = acc.map_raw_and_corrected(
                                 sol_projector.get_homography(), (g2d.x, g2d.y), offset_model)
-                            if raw_s is not None and corr_s is not None:
-                                raw_samples.append(raw_s); corr_samples.append(corr_s)
                     except Exception:
-                        pass
+                        live_raw = live_corr = None
+
+                if collecting:
+                    if live_raw is not None and live_corr is not None:
+                        raw_samples.append(live_raw); corr_samples.append(live_corr)
                     if len(corr_samples) >= SAMPLES:
                         rec = acc.compute_point_record(tgt, raw_samples, corr_samples,
                                                        view_dist_cm, screen_w, screen_width_cm)
@@ -2620,7 +2740,14 @@ Controls: SPACE = Record point, Q = Cancel"""
                         collecting = False; idx += 1; latest_gaze = None
                         continue
 
-                # ---- render ----
+                if sol_projector.is_homography_valid(strict=True):
+                    hom = "LIVE"
+                elif sol_projector.is_homography_valid():
+                    hom = "CACHED"
+                else:
+                    hom = "WAITING"
+
+                # ---- render (user screen) ----
                 win.blit(static_bg, (0, 0))
                 for mid in detected_marker_ids:
                     if mid in aruco_markers_px:
@@ -2634,14 +2761,11 @@ Controls: SPACE = Record point, Q = Cancel"""
                 pygame.draw.line(win, col, (tx - 36, ty), (tx + 36, ty), 1)
                 pygame.draw.line(win, col, (tx, ty - 36), (tx, ty + 36), 1)
 
-                if sol_projector.is_homography_valid(strict=True):
-                    hom = "LIVE"
-                elif sol_projector.is_homography_valid():
-                    hom = "CACHED"
-                else:
-                    hom = "WAITING"
                 if collecting:
                     msg = f"Collecting {len(corr_samples)}/{SAMPLES} - hold still"
+                elif dual_screen:
+                    # Subject screen: the operator presses SPACE from the tester monitor.
+                    msg = f"Look at the target and hold still ({idx + 1}/{len(targets)})"
                 else:
                     msg = (f"Point {idx + 1}/{len(targets)} ({tgt['name']}, {tgt['ecc_deg']:.0f} deg) "
                            f"- look at the target, press SPACE")
@@ -2649,6 +2773,16 @@ Controls: SPACE = Record point, Q = Cancel"""
                 win.blit(font.render(msg, True, (255, 255, 255)), (10, screen_h - 44))
                 win.blit(small.render(f"Homography: {hom}   |   ESC/Q to abort", True, (200, 200, 200)),
                          (screen_w - 470, screen_h - 40))
+
+                # ---- render (tester monitor) ----
+                if dual_screen:
+                    try:
+                        cv2.imshow(tester_win_name,
+                                   build_tester_canvas(tgt, live_corr, live_raw, hom, collecting, len(corr_samples)))
+                        cv2.waitKey(1)
+                    except Exception as _e:
+                        print(f"[Accuracy] tester view error: {_e}")
+
                 pygame.display.flip()
                 clock.tick(30)
         except Exception as e:
@@ -2661,6 +2795,12 @@ Controls: SPACE = Record point, Q = Cancel"""
                 pass
             try:
                 sol_client.stop()
+            except Exception:
+                pass
+            try:
+                if dual_screen:
+                    cv2.destroyWindow(tester_win_name)
+                    cv2.waitKey(1)
             except Exception:
                 pass
             try:

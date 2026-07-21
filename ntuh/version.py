@@ -17,6 +17,12 @@ Changelog
 ---------
 VA_center_opt
     1.0.0  Baseline: versioning introduced.
+    1.0.1  Fix: the Sol gaze accuracy test gave the operator no way to tell whether the
+           subject was fixating the target. Added an operator-only tester-monitor view
+           (schematic of the subject screen with the target, the live gaze dot, and the
+           target->gaze offset in px/deg) on the configured Tester Screen, with
+           focus-independent SPACE/Q. Nothing is drawn on the subject screen (so the dot
+           cannot be chased); no change on a single-monitor setup.
 calibration
     1.0.0  Baseline: versioning introduced.
     1.0.1  Multi-screen selection, screen-width (cm) input, image size shown in
@@ -30,7 +36,7 @@ replayer
 """
 
 APP_VERSIONS = {
-    "VA_center_opt": "1.0.0",
+    "VA_center_opt": "1.0.1",
     "calibration": "1.0.1",
     "replayer": "1.0.0",
 }

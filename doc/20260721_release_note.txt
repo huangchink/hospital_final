@@ -1,0 +1,59 @@
+==============================================================================
+ NTUH Eye-Tracking Suite - Release Notes
+ Build date: 2026-07-21
+==============================================================================
+
+This release builds on the 2026-07-05 build (same three programs:
+VA_center_opt.exe, calibration.exe, replayer.exe). How to run, where data is
+saved, and the per-participant workflow are UNCHANGED - see the earlier release
+notes in this folder for those. Below are only the changes since 2026-07-05.
+
+------------------------------------------------------------------------------
+ VERSION NUMBERS
+------------------------------------------------------------------------------
+Each program shows its version in the window title bar:
+      VA_center_opt   v1.0.1   (changed this release)
+      calibration     v1.0.1   (unchanged)
+      replayer        v1.0.0   (unchanged)
+Please include the version shown in the title when reporting an issue.
+
+------------------------------------------------------------------------------
+ SOL GAZE ACCURACY TEST  (VA_center_opt - "Sol Calib" tab)  -- fix, v1.0.1
+------------------------------------------------------------------------------
+Previously the accuracy test showed the targets only on the subject's screen,
+so the operator had no way to tell whether the subject was actually fixating
+the target before recording a point - off-target samples could be recorded
+without anyone noticing.
+
+  - Tester monitoring window (new): when a separate Tester Screen is configured,
+    an operator-only window opens on that screen. It shows a small picture of
+    the subject's screen with:
+          * the target                 (red cross)
+          * the subject's live gaze     (green dot; faint gray = raw, before offset)
+          * the live target->gaze offset in pixels and degrees
+    Watch the green dot settle on the red target, then press SPACE to record.
+    While recording it shows "COLLECTING x/30 - subject must hold fixation".
+
+  - The monitoring view is shown ONLY on the tester screen - nothing is drawn on
+    the subject's screen. This is deliberate: if the subject could see their own
+    gaze dot they would move their eyes to chase it onto the target, which would
+    corrupt the accuracy measurement.
+
+  - SPACE (record) and Q (abort) now work even if you have clicked the tester
+    window (it no longer matters which window has the keyboard focus).
+
+  How to turn it on:
+      * "Sol Calib" tab -> Display -> set "Tester Screen" to a DIFFERENT monitor
+        than the accuracy test's screen ("Preview Gaze Mapping" -> "Screen").
+      * With a single monitor (or both set to the same screen) the accuracy test
+        behaves exactly as before - no tester window.
+
+------------------------------------------------------------------------------
+ NOTES
+------------------------------------------------------------------------------
+- calibration.exe and replayer.exe are unchanged from the 2026-07-05 build.
+- For Sol gaze, test different ArUco marker counts / sizes on the actual screen
+  so the markers do not overlap each other or the stimulus area.
+- Detailed per-program documentation: VA_center_opt.md, calibration.md,
+  replayer.md (in this folder).
+==============================================================================

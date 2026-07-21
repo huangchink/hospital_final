@@ -6,6 +6,10 @@ A visual acuity (VA) testing program using contrast sensitivity gratings with su
 
 VA_center_opt presents circular sinusoidal gratings at the center of the screen and uses a staircase procedure to measure the user's contrast sensitivity threshold. It supports dual eye-tracking sources (webcam + Sol glasses), records gaze data, screen video, and webcam video throughout the entire experiment.
 
+## What's new (2026-07-21)
+
+- **Accuracy-test tester view**: the Sol gaze **Accuracy Test** now opens an operator-only monitoring window on the configured **Tester Screen**, showing a schematic of the subject's screen with the target (red), the subject's **live gaze dot** (green), and the live **target→gaze offset** in px/deg. Watch the dot settle on the target, then press SPACE to record. The dot is shown **only** on the tester screen (never on the subject's screen, so it cannot be chased). SPACE/Q work regardless of which window has focus. Falls back to the previous single-window behavior with one monitor. See **Sol Calib Tab** below.
+
 ## What's new (2026-06-07)
 
 - **Data-quality summary** on the tester screen at the end of a test: per-source **valid %** (100% = all data valid) for Sol (combined / left / right eye) and webcam (face / left / right eye), whole-test and trials-only. Also written to `sol_quality_metrics.json`.
@@ -101,6 +105,11 @@ Offset calibration for Sol glasses. Corrects systematic gaze offset when the Sol
 | Target Image | Image shown as fixation target during calibration | (none) |
 | Target Size (px) | Display size of the target | 100 |
 | Calibration Points | Number of calibration positions (1-5) | 5 |
+
+**Accuracy Test** (button in *Preview Gaze Mapping*): measures Sol gaze accuracy + precision before and after the loaded 2D offset, over concentric-ring + corner targets, and saves a CSV/JSON report plus heatmap/by-angle PNGs under `accuracy_test/`. The subject fixates each target and the operator presses **SPACE** (ESC/Q aborts).
+
+- Set the accuracy test's subject screen with *Preview Gaze Mapping → Screen*, and the operator's monitoring screen with *Display → Tester Screen*. When these are two different monitors, a **tester view** opens on the Tester Screen: a schematic of the subject's screen with the target (red cross), the live offset-corrected gaze (green dot), the raw gaze (faint gray), and the live target→gaze offset in px/deg. Confirm the gaze dot is on the target, then press SPACE.
+- The tester view is shown only on the Tester Screen; the subject never sees a gaze dot (so they cannot chase it and bias the measurement). With a single monitor the test runs as before, without a tester window.
 
 ### Recording Tab
 

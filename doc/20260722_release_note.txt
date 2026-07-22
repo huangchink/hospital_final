@@ -1,0 +1,56 @@
+==============================================================================
+ NTUH Eye-Tracking Suite - Release Notes
+ Build date: 2026-07-22
+==============================================================================
+
+This release builds on the 2026-07-21 build (same three programs:
+VA_center_opt.exe, calibration.exe, replayer.exe). How to run, where data is
+saved, and the per-participant workflow are UNCHANGED - see the earlier release
+notes in this folder for those. Below are only the changes since 2026-07-21.
+
+------------------------------------------------------------------------------
+ VERSION NUMBERS
+------------------------------------------------------------------------------
+Each program shows its version in the window title bar:
+      VA_center_opt   v1.0.2   (changed this release)
+      calibration     v1.0.1   (unchanged)
+      replayer        v1.0.0   (unchanged)
+Please include the version shown in the title when reporting an issue.
+
+------------------------------------------------------------------------------
+ SOL GAZE ACCURACY TEST  (VA_center_opt - "Sol Calib" tab)  -- fix, v1.0.2
+------------------------------------------------------------------------------
+The operator monitoring window (introduced on 2026-07-21) now shows the LIVE
+SOL FRONT-FACING (scene) CAMERA VIDEO, instead of the earlier schematic drawing.
+
+  - Tester monitor: on the configured Tester Screen you now see the actual Sol
+    scene-camera image with:
+          * the subject's gaze          (blue circle, "Gaze")
+          * the current target          (green cross, "Target")
+          * their offset in pixels
+    This is the same view the Sol offset-calibration tester window uses.
+
+  - The camera picture now appears as soon as the video starts (about a second
+    after the glasses connect), rather than only after the markers are detected.
+    This fixes the report that "the picture only appeared on the 3rd point while
+    the 1st and 2nd points had no picture", and reduces the perceived lag.
+
+  - Unchanged: the view is shown ONLY on the tester screen (never on the
+    subject's screen), and SPACE (record) / Q (abort) work regardless of which
+    window has focus. With a single monitor the accuracy test runs without a
+    tester window, as before.
+
+  Technical note: the scene video is streamed from the isolated (crash-safe) Sol
+  worker as already-decoded, compressed frames - the native video decode still
+  runs only inside that worker, so its crash-safety is unchanged.
+
+------------------------------------------------------------------------------
+ NOTES
+------------------------------------------------------------------------------
+- calibration.exe and replayer.exe are unchanged from the 2026-07-21 build.
+- To turn the tester monitor on: "Sol Calib" tab -> Display -> set "Tester
+  Screen" to a DIFFERENT monitor than the accuracy test's screen ("Preview Gaze
+  Mapping" -> "Screen").
+- Detailed per-program documentation: VA_center_opt.md, calibration.md,
+  replayer.md (in this folder).
+==============================================================================

@@ -134,7 +134,7 @@ are built **locally** with `release.py` (not in CI).
 2. Open a PR into `develop`; review; a human merges.
 3. Build + package from `develop`:
    ```
-   python release.py --tag
+   python packaging/release.py --tag
    ```
    This cleans/builds all three apps, runs `stage_release.py`, writes
    `release/YYYYMMDD_NTUH_EyeTracking_Suite.zip` (date-first, git-ignored), and creates per-app git
@@ -151,6 +151,6 @@ are built **locally** with `release.py` (not in CI).
 
 ## Where things live
 
-See [`README.md`](README.md#repository-layout). Quick pointers: app code in `ntuh/`; versions in
-`ntuh/version.py`; build in `*.spec` + `build_exe.bat` + `stage_release.py`; release in `release.py`;
-end-user docs in `doc/`.
+See [`README.md`](README.md#repository-layout). Quick pointers: app code in `ntuh/` (incl. `ntuh/sol/`,
+`ntuh/recording/`); versions in `ntuh/version.py`; all build & release tooling in `packaging/` (`*.spec`,
+`build_exe.bat`, `stage_release.py`, `release.py`, `pyinstaller_helpers.py`, `hooks/`); end-user docs in `doc/`.

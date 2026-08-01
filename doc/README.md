@@ -41,10 +41,10 @@ A default `anonymous_9pt` profile is included in both.
 
 ## Building from Source
 
-Run from the repo root (uses `VA_center_opt.spec` / `calibration.spec` / `replayer.spec` +
+Run from the repo root (build tooling lives in `packaging/`: the three `.spec` files +
 `stage_release.py`):
 ```
-build_exe.bat
+packaging\build_exe.bat
 ```
 This builds all three debug/console exes into `dist/`, copies the default profile, image folders
 and these docs next to each exe, and writes a `run_debug.bat` launcher per app.

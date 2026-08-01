@@ -11,10 +11,10 @@ releases are cut locally (not in CI). This script:
   3. (--tag) creates per-app git tags  <app>-v<version>  for the versions in ntuh/version.py.
 
 Usage (from the repo root, venv active):
-    python release.py                 # build all 3, stage, and zip
-    python release.py --no-build      # package the existing dist/ only
-    python release.py --tag           # also create per-app git tags
-    python release.py --name Foo      # zip base name (default NTUH_EyeTracking_Suite)
+    python packaging/release.py                 # build all 3, stage, and zip
+    python packaging/release.py --no-build      # package the existing dist/ only
+    python packaging/release.py --tag           # also create per-app git tags
+    python packaging/release.py --name Foo      # zip base name (default NTUH_EyeTracking_Suite)
 
 Pushing tags and merging develop -> main are left to a human (see CLAUDE.md).
 """
@@ -26,10 +26,11 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+# This script lives in packaging/; the repo root (dist/, release/, ntuh/, specs) is its parent.
+ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
 RELEASE = ROOT / "release"
-SPECS = ["VA_center_opt.spec", "calibration.spec", "replayer.spec"]
+SPECS = ["packaging/VA_center_opt.spec", "packaging/calibration.spec", "packaging/replayer.spec"]
 APPS = ["VA_center_opt", "calibration", "replayer"]
 
 
@@ -50,7 +51,7 @@ def build():
             shutil.rmtree(d)
     for spec in SPECS:
         run([sys.executable, "-m", "PyInstaller", "--clean", "-y", spec])
-    run([sys.executable, "stage_release.py"])
+    run([sys.executable, "packaging/stage_release.py"])
 
 
 def make_zip(name):

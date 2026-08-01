@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 PyInstaller spec file for VA_center_opt.py
-To build: python -m PyInstaller --clean -y VA_center_opt.spec
+To build (from the repo root): python -m PyInstaller --clean -y packaging/VA_center_opt.spec
 """
 
 import sys
@@ -11,6 +11,12 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 block_cipher = None
 
 # --- Apply workarounds (must be before Analysis) ---
+# This spec lives in packaging/. PyInstaller resolves relative paths in a spec against the spec's
+# own directory (SPECPATH), so compute the repo ROOT and make both the repo packages (ntuh, ganzin,
+# gazefollower) and this folder's pyinstaller_helpers importable, regardless of CWD.
+ROOT = os.path.dirname(SPECPATH)
+sys.path.insert(0, ROOT)
+sys.path.insert(0, SPECPATH)
 import pyinstaller_helpers
 pyinstaller_helpers.patch_dll_discovery()
 
@@ -30,11 +36,8 @@ hiddenimports = [
     'gazefollower.misc',
     'gazefollower.logger',
     'gazefollower.ui',
-    # Local modules
-    'recorder',
-    'sol_tracker',
-    'sol_offset_calibration',
-    'sol_2d_offset_calibration',
+    # (the former root-level modules recorder / sol_tracker / sol_offset_calibration /
+    #  sol_2d_offset_calibration now live under ntuh/ and are picked up by collect_submodules('ntuh'))
     # Sol SDK
     'ganzin',
     'ganzin.sol_sdk',
@@ -95,21 +98,15 @@ try:
 except Exception:
     pass
 
-datas += [('gazefollower', 'gazefollower')]
-datas += [
-    ('recorder.py', '.'),
-    ('sol_tracker.py', '.'),
-    ('sol_offset_calibration.py', '.'),
-    ('sol_2d_offset_calibration.py', '.'),
-]
+datas += [(os.path.join(ROOT, 'gazefollower'), 'gazefollower')]
 
-if os.path.exists('calibration_images'):
-    datas += [('calibration_images', 'calibration_images')]
-if os.path.exists('stimulus_images'):
-    datas += [('stimulus_images', 'stimulus_images')]
-if os.path.exists(os.path.join('calibration_profiles', 'anonymous_9pt')):
+if os.path.exists(os.path.join(ROOT, 'calibration_images')):
+    datas += [(os.path.join(ROOT, 'calibration_images'), 'calibration_images')]
+if os.path.exists(os.path.join(ROOT, 'stimulus_images')):
+    datas += [(os.path.join(ROOT, 'stimulus_images'), 'stimulus_images')]
+if os.path.exists(os.path.join(ROOT, 'calibration_profiles', 'anonymous_9pt')):
     datas += [
-        (os.path.join('calibration_profiles', 'anonymous_9pt'),
+        (os.path.join(ROOT, 'calibration_profiles', 'anonymous_9pt'),
          os.path.join('calibration_profiles', 'anonymous_9pt'))
     ]
 
@@ -119,14 +116,14 @@ datas += pyinstaller_helpers.collect_manual_datas()
 
 # ===================== Analysis =====================
 a = Analysis(
-    ['VA_center_opt.py'],
-    pathex=[],
+    [os.path.join(ROOT, 'VA_center_opt.py')],
+    pathex=[ROOT],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=['hooks/runtime_hook_mediapipe.py'],
+    runtime_hooks=[os.path.join(SPECPATH, 'hooks', 'runtime_hook_mediapipe.py')],
     excludes=['IPython', 'jupyter', 'MNN', '_mnncengine'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

@@ -1174,3 +1174,11 @@ class Sol2DOffsetCalibrator:
         self.model.clear_calibration_points()
         self.current_point_index = 0
         self.calibration_complete = False
+
+
+# --- Backward compatibility -------------------------------------------------
+# Saved 2D-offset profiles pickle Sol2DOffsetModel. Those pickles were written when this module
+# lived at the repo root as ``sol_2d_offset_calibration``; the pickle stores that old module path.
+# Alias the old name to this module so profiles created before the reorg still unpickle.
+import sys as _sys
+_sys.modules.setdefault("sol_2d_offset_calibration", _sys.modules[__name__])

@@ -23,11 +23,6 @@ VA_center_opt
            target->gaze offset in px/deg) on the configured Tester Screen, with
            focus-independent SPACE/Q. Nothing is drawn on the subject screen (so the dot
            cannot be chased); no change on a single-monitor setup.
-    1.0.2  Fix: the accuracy-test tester view now shows the live Sol scene-camera video
-           (subject gaze + target overlaid), streamed from the isolated crash-safe worker,
-           instead of a schematic. The camera appears as soon as frames arrive rather than
-           only once the homography locks - fixing the "no picture until the 3rd point"
-           report and the high perceived latency.
 calibration
     1.0.0  Baseline: versioning introduced.
     1.0.1  Multi-screen selection, screen-width (cm) input, image size shown in
@@ -41,7 +36,7 @@ replayer
 """
 
 APP_VERSIONS = {
-    "VA_center_opt": "1.0.2",
+    "VA_center_opt": "1.0.1",
     "calibration": "1.0.1",
     "replayer": "1.0.0",
 }

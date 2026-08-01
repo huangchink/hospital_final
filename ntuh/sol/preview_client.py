@@ -21,7 +21,6 @@ class SolPreviewClient:
         self.gaze_q = None
         self.msg_q = None
         self.cmd_q = None
-        self.frame_q = None
         self.intentional_stop = False
         self._crashed = False
         self._respawn_at = 0.0
@@ -33,9 +32,8 @@ class SolPreviewClient:
         self.gaze_q = mp.Queue(maxsize=120)
         self.msg_q = mp.Queue(maxsize=400)
         self.cmd_q = mp.Queue(maxsize=50)
-        self.frame_q = mp.Queue(maxsize=2)  # newest scene frame (JPEG bytes) for the tester view
         self.proc = mp.Process(target=run_child,
-                               args=(self.params, self.gaze_q, self.msg_q, self.cmd_q, self.frame_q),
+                               args=(self.params, self.gaze_q, self.msg_q, self.cmd_q),
                                daemon=True, name="sol_scene_worker")
         self.proc.start()
 
@@ -46,7 +44,7 @@ class SolPreviewClient:
         self._spawn()
 
     def _close_queues(self):
-        for q in (self.gaze_q, self.msg_q, self.cmd_q, self.frame_q):
+        for q in (self.gaze_q, self.msg_q, self.cmd_q):
             if q is None:
                 continue
             try:
@@ -54,7 +52,7 @@ class SolPreviewClient:
                 q.cancel_join_thread()  # don't let the feeder thread block parent exit
             except Exception:
                 pass
-        self.gaze_q = self.msg_q = self.cmd_q = self.frame_q = None
+        self.gaze_q = self.msg_q = self.cmd_q = None
 
     def stop(self, timeout=4.0):
         """Graceful stop: signal STOP (-> AsyncClient __aexit__ closes TCP), join, terminate only
@@ -104,30 +102,6 @@ class SolPreviewClient:
             except Exception:
                 break
         return out
-
-    def drain_frames(self, cap=6):
-        """Return the NEWEST scene frame as a decoded BGR numpy image, or None.
-
-        Only the child streams frames, and only when params['stream_frames'] is set (the accuracy
-        test's tester view). Older frames are dropped so display latency stays ~1 frame. cv2/numpy
-        are imported lazily here so this module's top level stays import-light (SDK-free)."""
-        if self.frame_q is None:
-            return None
-        latest = None
-        for _ in range(cap):
-            try:
-                latest = self.frame_q.get_nowait()
-            except Exception:
-                break
-        if latest is None:
-            return None
-        try:
-            import numpy as np
-            import cv2
-            arr = np.frombuffer(latest, dtype=np.uint8)
-            return cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        except Exception:
-            return None
 
     def _send(self, cmd):
         try:

@@ -2506,8 +2506,6 @@ Controls: SPACE = Record point, Q = Cancel"""
             'screen_width_m': screen_width_m, 'pose_smooth': pose_smooth,
             'seed_homography': (self.sol_cached_homography.tolist()
                                 if self.sol_cached_homography is not None else None),
-            # Stream the Sol scene-camera frames to the tester monitor (only when there is one).
-            'stream_frames': dual_screen,
         }
 
         # Hand the device session to the isolated worker (crash-safe), like the preview.
@@ -2592,57 +2590,67 @@ Controls: SPACE = Record point, Q = Cancel"""
         except Exception:
             _u32_keys = None
 
-        def build_tester_view(frame, gaze2d_cam, target_cam, tgt, hom, collecting_now, n_collected):
-            """Operator monitoring view: the live Sol scene-camera frame (streamed from the isolated
-            worker) with the subject's gaze (blue) and the current target back-projected into the
-            camera image (green), plus their offset - the same view the 2D calib tester uses. Shown
-            ONLY on the tester monitor. Coordinates are in full camera-image pixels (the frame is
-            streamed full-res); the window scales for display. Falls back to a placeholder until the
-            first frame arrives."""
-            if frame is not None:
-                canvas = frame.copy()
-                have_frame = True
+        def build_tester_canvas(tgt, corr_pt, raw_pt, hom, collecting_now, n_collected):
+            """Operator monitoring canvas: a scaled schematic of the USER screen with the target
+            (red), the live offset-corrected gaze (green), the raw gaze (gray), and the live
+            target->gaze offset in px/deg. Drawn from screen-space data (no camera frame needed,
+            so it works with the isolated crash-safe scene worker)."""
+            CW, CH = 900, 640
+            canvas = np.full((CH, CW, 3), 30, dtype=np.uint8)
+            top_h, bot_h, mrg = 74, 44, 30
+            box_x0, box_y0, box_x1, box_y1 = mrg, top_h + 6, CW - mrg, CH - bot_h - 6
+            avail_w, avail_h = box_x1 - box_x0, box_y1 - box_y0
+            scale = min(avail_w / float(screen_w), avail_h / float(screen_h))
+            rect_w, rect_h = int(screen_w * scale), int(screen_h * scale)
+            rect_x = box_x0 + (avail_w - rect_w) // 2
+            rect_y = box_y0 + (avail_h - rect_h) // 2
+            sx = lambda x: int(rect_x + x * scale)
+            sy = lambda y: int(rect_y + y * scale)
+            # user-screen rectangle
+            cv2.rectangle(canvas, (rect_x, rect_y), (rect_x + rect_w, rect_y + rect_h), (70, 70, 80), -1)
+            cv2.rectangle(canvas, (rect_x, rect_y), (rect_x + rect_w, rect_y + rect_h), (150, 150, 150), 1)
+            # target (red) with crosshair
+            tgx, tgy = sx(tgt['x']), sy(tgt['y'])
+            cv2.circle(canvas, (tgx, tgy), 13, (0, 0, 255), 2)
+            cv2.drawMarker(canvas, (tgx, tgy), (0, 0, 255), cv2.MARKER_CROSS, 26, 2)
+            # raw gaze (dim gray)
+            if raw_pt is not None and np.isfinite(raw_pt[0]) and np.isfinite(raw_pt[1]):
+                cv2.circle(canvas, (sx(raw_pt[0]), sy(raw_pt[1])), 6, (120, 120, 120), 1)
+            # corrected gaze (green) + offset line/label
+            if corr_pt is not None and np.isfinite(corr_pt[0]) and np.isfinite(corr_pt[1]):
+                ggx, ggy = sx(corr_pt[0]), sy(corr_pt[1])
+                cv2.line(canvas, (tgx, tgy), (ggx, ggy), (0, 220, 220), 1)
+                cv2.circle(canvas, (ggx, ggy), 10, (0, 220, 0), 2)
+                cv2.circle(canvas, (ggx, ggy), 3, (0, 220, 0), -1)
+                err_px = float(np.hypot(corr_pt[0] - tgt['x'], corr_pt[1] - tgt['y']))
+                err_deg = acc.px_to_deg(err_px, view_dist_cm, screen_w, screen_width_cm)
+                cv2.putText(canvas, f"offset {err_px:.0f}px / {err_deg:.2f}deg",
+                            (min(ggx, tgx), max(top_h + 24, min(ggy, tgy) - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 220), 1, cv2.LINE_AA)
             else:
-                canvas = np.full((640, 900, 3), 30, dtype=np.uint8)
-                cv2.putText(canvas, "Waiting for Sol camera...", (40, 320),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (160, 160, 160), 2, cv2.LINE_AA)
-                have_frame = False
-            H, W = canvas.shape[:2]
-            gx = gy = None
-            if have_frame and gaze2d_cam is not None and np.isfinite(gaze2d_cam[0]) and np.isfinite(gaze2d_cam[1]):
-                gx, gy = int(gaze2d_cam[0]), int(gaze2d_cam[1])
-                cv2.circle(canvas, (gx, gy), 15, (255, 0, 0), 3)
-                cv2.circle(canvas, (gx, gy), 4, (255, 255, 0), -1)
-                cv2.putText(canvas, "Gaze", (gx + 18, gy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-            if have_frame and target_cam is not None and np.isfinite(target_cam[0]) and np.isfinite(target_cam[1]):
-                tx, ty = int(target_cam[0]), int(target_cam[1])
-                cv2.circle(canvas, (tx, ty), 20, (0, 255, 0), 3)
-                cv2.drawMarker(canvas, (tx, ty), (0, 255, 0), cv2.MARKER_CROSS, 30, 2)
-                cv2.putText(canvas, "Target", (tx + 24, ty - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                if gx is not None:
-                    cv2.line(canvas, (gx, gy), (tx, ty), (0, 255, 255), 2)
-                    d_px = float(np.hypot(gaze2d_cam[0] - target_cam[0], gaze2d_cam[1] - target_cam[1]))
-                    cv2.putText(canvas, f"offset {d_px:.0f}px (camera)", ((gx + tx) // 2, (gy + ty) // 2 - 8),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
-            # status bar (top)
-            cv2.rectangle(canvas, (0, 0), (W, 66), (35, 35, 35), -1)
-            cv2.putText(canvas, f"Accuracy Test - point {idx + 1}/{len(targets)} "
+                cv2.putText(canvas, "no gaze on screen", (rect_x + 8, rect_y + 24),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (120, 120, 200), 1, cv2.LINE_AA)
+            # top bar
+            cv2.rectangle(canvas, (0, 0), (CW, top_h), (45, 45, 45), -1)
+            cv2.putText(canvas, f"Accuracy Test - point {idx + 1}/{len(targets)}  "
                                 f"({tgt['name']}, {tgt['ecc_deg']:.0f}deg)",
-                        (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.66, (255, 255, 255), 2, cv2.LINE_AA)
+                        (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.64, (255, 255, 255), 2, cv2.LINE_AA)
             hom_col = {"LIVE": (100, 255, 100), "CACHED": (100, 255, 255)}.get(hom, (100, 100, 255))
+            cv2.putText(canvas, f"Homography: {hom}", (12, 58),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.56, hom_col, 1, cv2.LINE_AA)
             if collecting_now:
                 s2, s2col = f"COLLECTING {n_collected}/{SAMPLES} - subject must hold fixation", (0, 255, 255)
             elif hom in ("LIVE", "CACHED"):
-                s2, s2col = "READY - when the gaze dot is on the target, press SPACE", (150, 255, 150)
+                s2, s2col = "READY - when the subject fixates the red target, press SPACE", (200, 255, 200)
             else:
-                s2, s2col = "waiting for ArUco markers...", (150, 150, 255)
-            cv2.putText(canvas, f"Homography: {hom}  |  {s2}", (10, 54),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, s2col, 1, cv2.LINE_AA)
-            cv2.putText(canvas, "SPACE=record  Q/ESC=abort", (W - 250, 26),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+                s2, s2col = "waiting for ArUco markers (LIVE/CACHED)...", (150, 150, 255)
+            cv2.putText(canvas, s2, (210, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.54, s2col, 1, cv2.LINE_AA)
+            # legend + controls
+            cv2.putText(canvas, "red = target   green = subject gaze   gray = raw",
+                        (12, CH - bot_h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (180, 180, 180), 1, cv2.LINE_AA)
+            cv2.putText(canvas, "SPACE = record    Q/ESC = abort",
+                        (CW - 320, CH - bot_h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA)
             return canvas
-
-        latest_frame = None  # newest Sol scene-camera frame for the tester view
 
         print(f"[Accuracy] {len(targets)} targets. Subject fixates each target; operator presses "
               f"SPACE (watch the tester view). ESC/Q aborts.")
@@ -2705,15 +2713,10 @@ Controls: SPACE = Record point, Q = Cancel"""
                     print("[Accuracy] scene worker could not recover; aborting")
                     running = False; aborted = True
 
-                # Newest Sol scene-camera frame for the tester view (streamed from the worker).
-                if dual_screen:
-                    _nf = sol_client.drain_frames()
-                    if _nf is not None:
-                        latest_frame = _nf
-
                 tgt = targets[idx]
 
-                # Live gaze -> screen (raw + offset-corrected) for the recorded samples below.
+                # Live gaze -> screen (raw + offset-corrected), computed every frame so the tester
+                # view can show where the subject is looking right now (not only while recording).
                 live_raw = live_corr = None
                 if latest_gaze is not None:
                     try:
@@ -2771,20 +2774,11 @@ Controls: SPACE = Record point, Q = Cancel"""
                 win.blit(small.render(f"Homography: {hom}   |   ESC/Q to abort", True, (200, 200, 200)),
                          (screen_w - 470, screen_h - 40))
 
-                # ---- render (tester monitor: live Sol scene camera + gaze/target overlay) ----
+                # ---- render (tester monitor) ----
                 if dual_screen:
                     try:
-                        gaze2d_cam = None
-                        if latest_gaze is not None and hasattr(latest_gaze.combined, 'gaze_2d'):
-                            _g2 = latest_gaze.combined.gaze_2d
-                            gaze2d_cam = (_g2.x, _g2.y)
-                        try:
-                            target_cam = sol_projector.project_screen_to_image((tgt['x'], tgt['y']))
-                        except Exception:
-                            target_cam = None
                         cv2.imshow(tester_win_name,
-                                   build_tester_view(latest_frame, gaze2d_cam, target_cam, tgt, hom,
-                                                     collecting, len(corr_samples)))
+                                   build_tester_canvas(tgt, live_corr, live_raw, hom, collecting, len(corr_samples)))
                         cv2.waitKey(1)
                     except Exception as _e:
                         print(f"[Accuracy] tester view error: {_e}")

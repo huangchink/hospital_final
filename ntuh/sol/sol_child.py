@@ -42,13 +42,10 @@ def _extract_img(frame, np):
     return None
 
 
-def run_child(params, gaze_q, msg_q, cmd_q, frame_q=None):
+def run_child(params, gaze_q, msg_q, cmd_q):
     """Child process entry (multiprocessing target). `params` is a plain picklable dict:
     ip, port, aruco_dict_id, screen_w/h/x/y, marker_k/marker_n/marker_pattern_size,
-    marker_container_size, screen_width_m, pose_smooth, seed_homography(list|None),
-    stream_frames(bool). When params['stream_frames'] is set and frame_q is provided, the
-    already-decoded scene frames are JPEG-encoded and streamed to the parent's tester view
-    (newest-only). The native H.264 decode stays here in the child; only compressed bytes cross."""
+    marker_container_size, screen_width_m, pose_smooth, seed_homography(list|None)."""
     _install_child_excepthook()
 
     # --- Deferred heavy imports: CHILD ONLY ---
@@ -158,10 +155,7 @@ def run_child(params, gaze_q, msg_q, cmd_q, frame_q=None):
 
     def scene_publish():
         EMIT = 1.0 / 15.0
-        FRAME_EMIT = 1.0 / 15.0  # stream the tester-view frame at the same cadence as the homography
-        stream_frames = bool(params.get("stream_frames")) and frame_q is not None
         last_emit = 0.0
-        last_frame_emit = 0.0
         while state["running"]:
             proj = state["proj"]
             if proj is None:
@@ -178,31 +172,6 @@ def run_child(params, gaze_q, msg_q, cmd_q, frame_q=None):
                     img = ex
             if img is not None:
                 proj.submit_frame_for_pose(img)
-                # Stream the (already-decoded) scene frame to the parent's tester view, opt-in and
-                # throttled. Only compressed JPEG bytes cross the queue - the native H.264 decode
-                # that the isolation contains has already happened, so this is crash-safe. Newest
-                # frame wins (drop-oldest) so display latency stays bounded to ~1 frame.
-                if stream_frames:
-                    now_f = time.time()
-                    if now_f - last_frame_emit >= FRAME_EMIT:
-                        last_frame_emit = now_f
-                        try:
-                            ok, enc = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
-                            if ok:
-                                data = enc.tobytes()
-                                try:
-                                    frame_q.put_nowait(data)
-                                except queue.Full:
-                                    try:
-                                        frame_q.get_nowait()
-                                    except queue.Empty:
-                                        pass
-                                    try:
-                                        frame_q.put_nowait(data)
-                                    except queue.Full:
-                                        pass
-                        except Exception:
-                            pass
             now = time.time()
             if now - last_emit >= EMIT:
                 last_emit = now

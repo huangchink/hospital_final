@@ -56,12 +56,13 @@ Each app reads/writes its data next to itself (`VA_output/`, `calibration_profil
 PyInstaller **onedir** builds, one `.spec` per app, staged by `stage_release.py`:
 
 ```bat
-build_exe.bat
+packaging\build_exe.bat
 ```
 
 This cleans `build/` + `dist/`, builds `VA_center_opt` / `calibration` / `replayer`, and stages the
 default profiles, image folders, docs, and a `run_debug.bat` launcher next to each `.exe` in `dist/`.
-To build one app manually: `python -m PyInstaller --clean -y VA_center_opt.spec` then `python stage_release.py`.
+(`build_exe.bat` cd's to the repo root itself.) To build one app manually, from the repo root:
+`python -m PyInstaller --clean -y packaging/VA_center_opt.spec` then `python packaging/stage_release.py`.
 
 ## Release
 
@@ -69,9 +70,9 @@ Cut a release with the helper (bump the version in `ntuh/version.py` first — s
 [Versioning](#versioning--releases)):
 
 ```bat
-python release.py            :: build all 3, stage, and zip date-first into release\
-python release.py --no-build :: package the current dist\ only
-python release.py --tag      :: also create per-app git tags for the current versions
+python packaging\release.py            :: build all 3, stage, and zip date-first into release\
+python packaging\release.py --no-build :: package the current dist\ only
+python packaging\release.py --tag      :: also create per-app git tags for the current versions
 ```
 
 The release archive is written to the git-ignored `release/` folder as
@@ -80,11 +81,12 @@ The release archive is written to the git-ignored `release/` folder as
 ## Repository layout
 
 ```
-VA_center_opt.py / calibration.py / replayer.py   app entry points (thin)
-ntuh/                 package: ui/, flows/, sol/, tracking/, replayer/, common/, version.py
+VA_center_opt.py / calibration.py / replayer.py   app entry points (thin; stay at root)
+ntuh/                 package: ui/, flows/, sol/, tracking/, replayer/, recording/, common/, version.py
 gazefollower/         vendored webcam gaze pipeline (do not edit internals)
 vendor/               Ganzin Sol SDK wheel
-*.spec, build_exe.bat, stage_release.py, release.py   build & release
+packaging/            build & release: *.spec, build_exe.bat, stage_release.py, release.py,
+                      pyinstaller_helpers.py, hooks/
 doc/                  end-user docs + release notes
 release/              built release zips (git-ignored)
 ```

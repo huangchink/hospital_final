@@ -36,7 +36,7 @@ pandas==2.3.3
 # --- Sol scene-camera H.264 decode (used by the Ganzin SDK) ---
 av==16.0.1
 
-# --- Build (PyInstaller onedir exes; see build_exe.bat) ---
+# --- Build (PyInstaller onedir exes; see packaging/build_exe.bat) ---
 pyinstaller==6.17.0
 pyinstaller-hooks-contrib==2025.11
 

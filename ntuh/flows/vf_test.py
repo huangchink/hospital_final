@@ -11,8 +11,8 @@ import cv2
 import numpy as np
 import pygame
 
-from sol_tracker import ScreenProjector3D, create_calibration_assets
-from recorder import Recorder, DummyRecorder
+from ntuh.sol.projector import ScreenProjector3D, create_calibration_assets
+from ntuh.recording.recorder import Recorder, DummyRecorder
 from gazefollower import GazeFollower
 from gazefollower.misc import DefaultConfig
 from gazefollower.calibration import SVRCalibration
@@ -137,7 +137,7 @@ def run_vf_test(cfg, sol_context=None):
         sol_2d_offset_model = None
         if sol_gaze_method == '2D':
             try:
-                from sol_2d_offset_calibration import load_sol_2d_offset, Sol2DOffsetModel
+                from ntuh.sol.offset_calibration_2d import load_sol_2d_offset, Sol2DOffsetModel
                 offset_data = load_sol_2d_offset(cfg.get('user_name', 'anonymous'),
                                                   Path(cfg.get('calib_dir', 'calibration_profiles')))
                 if offset_data:
@@ -155,7 +155,7 @@ def run_vf_test(cfg, sol_context=None):
         sol_offset_yaw = 0.0
         if sol_gaze_method == '3D':
             try:
-                from sol_offset_calibration import load_sol_offset
+                from ntuh.sol.offset_calibration import load_sol_offset
                 sol_offset = load_sol_offset(cfg.get('user_name', 'anonymous'),
                                               Path(cfg.get('calib_dir', 'calibration_profiles')))
                 if sol_offset:

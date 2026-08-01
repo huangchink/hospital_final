@@ -13,8 +13,9 @@ import cv2
 import numpy as np
 import pygame
 
-from sol_tracker import SolConnector, ScreenProjector3D, create_calibration_assets, SDK_AVAILABLE
-from recorder import Recorder, DummyRecorder
+from ntuh.sol.connector import SolConnector, SDK_AVAILABLE
+from ntuh.sol.projector import ScreenProjector3D, create_calibration_assets
+from ntuh.recording.recorder import Recorder, DummyRecorder
 from gazefollower import GazeFollower
 from gazefollower.misc import DefaultConfig
 from gazefollower.calibration import SVRCalibration
@@ -32,14 +33,14 @@ from ntuh.tracking.sol_session import run_sol_worker
 from ntuh.ui.tester_dashboard import TesterDashboard
 
 try:
-    from sol_offset_calibration import load_sol_offset, apply_angular_offset
+    from ntuh.sol.offset_calibration import load_sol_offset, apply_angular_offset
     SOL_OFFSET_AVAILABLE = True
 except Exception:
     SOL_OFFSET_AVAILABLE = False
     load_sol_offset = apply_angular_offset = None
 
 try:
-    from sol_2d_offset_calibration import load_sol_2d_offset
+    from ntuh.sol.offset_calibration_2d import load_sol_2d_offset
     SOL_2D_OFFSET_AVAILABLE = True
 except Exception:
     SOL_2D_OFFSET_AVAILABLE = False

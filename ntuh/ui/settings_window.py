@@ -23,7 +23,7 @@ from gazefollower.misc import DefaultConfig
 from gazefollower.calibration import SVRCalibration
 from gazefollower.camera import WebCamCamera
 
-from recorder import Recorder
+from ntuh.recording.recorder import Recorder
 from ntuh.common.app_env import APP_DIR, LAST_SETTINGS_FILE
 from ntuh.common.optics import px_to_cm, screen_width_deg_from_cm
 from ntuh.version import get_version
@@ -37,12 +37,13 @@ from ntuh.ui.widgets import Camera, ScrollableFrame
 from ntuh.tracking.sol_session import run_sol_worker
 
 try:
-    from sol_tracker import SolConnector, ScreenProjector3D, create_calibration_assets, SDK_AVAILABLE
+    from ntuh.sol.connector import SolConnector, SDK_AVAILABLE
+    from ntuh.sol.projector import ScreenProjector3D, create_calibration_assets
 except ImportError:
     SDK_AVAILABLE = False
 
 try:
-    from sol_offset_calibration import (
+    from ntuh.sol.offset_calibration import (
         apply_angular_offset, load_sol_offset, save_sol_offset, clear_sol_offset,
         SolOffsetCalibrator,
     )
@@ -51,7 +52,7 @@ except ImportError:
     SOL_OFFSET_AVAILABLE = False
 
 try:
-    from sol_2d_offset_calibration import (
+    from ntuh.sol.offset_calibration_2d import (
         Sol2DOffsetCalibrator, Sol2DOffsetModel,
         load_sol_2d_offset, save_sol_2d_offset, clear_sol_2d_offset,
         CALIBRATION_POSITIONS_2D, compute_safe_calibration_positions,
@@ -1879,7 +1880,7 @@ Controls: SPACE = Record point, Q = Cancel"""
         if SOL_2D_OFFSET_AVAILABLE:
             username = self.user_var.get().strip() or 'anonymous'
             calib_dir = Path(self.calib_dir_var.get())
-            from sol_2d_offset_calibration import get_sol_2d_offset_path
+            from ntuh.sol.offset_calibration_2d import get_sol_2d_offset_path
             offset_path = get_sol_2d_offset_path(username, calib_dir)
             print(f"[Sol Preview] Looking for 2D offset: {offset_path} (exists: {offset_path.exists()})")
             preview_2d_offset_data = load_sol_2d_offset(username, calib_dir)

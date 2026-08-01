@@ -15,7 +15,8 @@ import os
 import shutil
 import sys
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+# This script lives in packaging/; the repo root (where dist/ and doc/ live) is its parent.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIST = os.path.join(ROOT, "dist")
 
 # What each built app needs staged next to its .exe.

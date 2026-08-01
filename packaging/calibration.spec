@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 PyInstaller spec file for calibration.py
-To build: python -m PyInstaller --clean -y calibration.spec
+To build (from the repo root): python -m PyInstaller --clean -y packaging/calibration.spec
 """
 
 import sys
@@ -11,6 +11,12 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 block_cipher = None
 
 # --- Apply workarounds (must be before Analysis) ---
+# This spec lives in packaging/. PyInstaller resolves relative paths in a spec against the spec's
+# own directory (SPECPATH), so compute the repo ROOT and make both the repo packages (ntuh, ganzin,
+# gazefollower) and this folder's pyinstaller_helpers importable, regardless of CWD.
+ROOT = os.path.dirname(SPECPATH)
+sys.path.insert(0, ROOT)
+sys.path.insert(0, SPECPATH)
 import pyinstaller_helpers
 pyinstaller_helpers.patch_dll_discovery()
 
@@ -68,15 +74,15 @@ try:
 except Exception:
     pass
 
-datas += [('gazefollower', 'gazefollower')]
+datas += [(os.path.join(ROOT, 'gazefollower'), 'gazefollower')]
 
-if os.path.exists('calibration_images'):
-    datas += [('calibration_images', 'calibration_images')]
-if os.path.exists('stimulus_images'):
-    datas += [('stimulus_images', 'stimulus_images')]
+if os.path.exists(os.path.join(ROOT, 'calibration_images')):
+    datas += [(os.path.join(ROOT, 'calibration_images'), 'calibration_images')]
+if os.path.exists(os.path.join(ROOT, 'stimulus_images')):
+    datas += [(os.path.join(ROOT, 'stimulus_images'), 'stimulus_images')]
 
-if os.path.exists('calibration_profiles'):
-    datas += [('calibration_profiles', 'calibration_profiles')]
+if os.path.exists(os.path.join(ROOT, 'calibration_profiles')):
+    datas += [(os.path.join(ROOT, 'calibration_profiles'), 'calibration_profiles')]
 
 # ===================== Binaries (manual DLL inclusion) =====================
 binaries = pyinstaller_helpers.collect_manual_binaries()
@@ -84,14 +90,14 @@ datas += pyinstaller_helpers.collect_manual_datas()
 
 # ===================== Analysis =====================
 a = Analysis(
-    ['calibration.py'],
-    pathex=[],
+    [os.path.join(ROOT, 'calibration.py')],
+    pathex=[ROOT],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=['hooks/runtime_hook_mediapipe.py'],
+    runtime_hooks=[os.path.join(SPECPATH, 'hooks', 'runtime_hook_mediapipe.py')],
     excludes=['IPython', 'jupyter', 'MNN', '_mnncengine'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

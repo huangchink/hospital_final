@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 PyInstaller spec file for replayer.py (PyQt6 session replayer).
-To build: python -m PyInstaller --clean -y replayer.spec
+To build (from the repo root): python -m PyInstaller --clean -y packaging/replayer.spec
 
 Note: unlike VA_center_opt / calibration, replayer does NOT use mediapipe or MNN, so it
 does NOT use pyinstaller_helpers.patch_dll_discovery() (that workaround skips PyInstaller's
@@ -9,7 +9,14 @@ DLL-dependency discovery, which would leave PyQt6's Qt6*.dll unbundled -> "DLL l
 while importing QtWidgets"). Here we keep normal discovery and collect PyQt6 explicitly.
 UPX is disabled because it can corrupt the Qt6 DLLs and cause the same load failure.
 """
+import sys
+import os
 from PyInstaller.utils.hooks import collect_all, collect_submodules
+
+# This spec lives in packaging/; PyInstaller resolves relative spec paths against SPECPATH, so
+# compute the repo ROOT and put it on sys.path for collect_submodules('ntuh') + Analysis.
+ROOT = os.path.dirname(SPECPATH)
+sys.path.insert(0, ROOT)
 
 block_cipher = None
 
@@ -28,8 +35,8 @@ except Exception:
     pass
 
 a = Analysis(
-    ['replayer.py'],
-    pathex=[],
+    [os.path.join(ROOT, 'replayer.py')],
+    pathex=[ROOT],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

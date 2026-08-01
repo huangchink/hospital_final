@@ -1,0 +1,46 @@
+# NTUH Eye-Tracking Suite - Python dependencies
+# ---------------------------------------------------------------------------
+# Target: Python 3.12 on Windows (the suite is Windows-only: Sol SDK + native
+# video decode + Win32 calls). Versions below are the tested, known-good set.
+#
+# Install (from the repo root, inside a venv):
+#     python -m venv venv
+#     venv\Scripts\activate
+#     pip install -r requirements.txt
+#
+# `gazefollower/` is vendored in this repo (not a PyPI package) and needs no
+# install. The Ganzin Sol SDK is vendored as a wheel under vendor/ and is
+# installed by the last line of this file.
+# ---------------------------------------------------------------------------
+
+# --- Core numerics / vision ---
+numpy==1.26.4
+opencv-contrib-python==4.11.0.86   # provides cv2 incl. cv2.aruco (superset of opencv-python)
+pillow==12.1.0
+
+# --- Face / gaze (GazeFollower webcam pipeline) ---
+mediapipe==0.10.21
+protobuf==4.25.8                   # pinned for mediapipe compatibility
+
+# --- Stimulus display + windows/monitors ---
+pygame==2.6.1
+screeninfo==0.8.1
+
+# --- GUI (replayer) + plotting (accuracy-test reports) ---
+PyQt6==6.11.0
+matplotlib==3.10.8
+
+# --- Data / analysis (replayer, reports) ---
+pandas==2.3.3
+
+# --- Sol scene-camera H.264 decode (used by the Ganzin SDK) ---
+av==16.0.1
+
+# --- Build (PyInstaller onedir exes; see build_exe.bat) ---
+pyinstaller==6.17.0
+pyinstaller-hooks-contrib==2025.11
+
+# --- Ganzin Sol SDK (vendored wheel; not on PyPI) ---
+# Installed from the repo. Its own deps (aiohttp/websockets/requests) are
+# resolved automatically. Run pip from the repo root so this relative path works.
+vendor/ganzin_sol_sdk-1.2.2-py3-none-any.whl

@@ -31,13 +31,16 @@ calibration
            without calibrating), 'q'-to-quit on the calibration screens, and
            English-keyboard switch/restore with crash recovery (all matching
            VA_center_opt).
+    1.1.0  A finished profile is now also copied to the sibling
+           VA_center_opt/calibration_profiles/ folder (release layout), so it can be used
+           without the manual copy step; the "Done" dialog shows both paths.
 replayer
     1.0.0  Baseline: versioning introduced.
 """
 
 APP_VERSIONS = {
     "VA_center_opt": "1.0.1",
-    "calibration": "1.0.1",
+    "calibration": "1.1.0",
     "replayer": "1.0.0",
 }
 

@@ -81,7 +81,7 @@ VA_center_opt presents circular sinusoidal gratings at the center of the screen 
 | Calibration Folder | Path to webcam calibration profiles | calibration_profiles/ |
 | Select Camera | Webcam device index | 0 |
 
-> **Note:** Profiles are read from the `calibration_profiles/` folder **next to `VA_center_opt.exe`**. To use a profile made by `calibration.exe` (which saves to `calibration/calibration_profiles/`), either copy its `<name>_<points>pt` folder here, or set this Calibration Folder to point at `calibration/calibration_profiles/`. A default `anonymous_9pt` profile is included.
+> **Note:** Profiles are read from the `calibration_profiles/` folder **next to `VA_center_opt.exe`**. `calibration.exe` copies each finished profile here automatically (as well as to its own `calibration/calibration_profiles/`), so new profiles appear without any manual step; if the two app folders are not side by side, copy the `<name>_<points>pt` folder here or point this Calibration Folder at `calibration/calibration_profiles/`. A default `anonymous_9pt` profile is included.
 
 ### Sol Tab
 

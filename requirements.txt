@@ -21,6 +21,7 @@ pillow==12.1.0
 # --- Face / gaze (GazeFollower webcam pipeline) ---
 mediapipe==0.10.21
 protobuf==4.25.8                   # pinned for mediapipe compatibility
+MNN==3.6.1                         # inference engine for the vendored gazefollower MGazeNet model
 
 # --- Stimulus display + windows/monitors ---
 pygame==2.6.1

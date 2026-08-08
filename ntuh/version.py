@@ -26,6 +26,12 @@ VA_center_opt
     1.1.0  The "wait for stable valid data" gate can now be overridden: pressing SPACE
            (from the subject or the tester window) starts the trial immediately. The
            dashboard banner shows the hint. VF trials are unaffected.
+    1.1.1  Fix: connecting to Sol failed with 'No mapping found for keys: frozenset({...})'
+           and leaked an aiohttp session, because the phone had moved to remote API 2.0.0
+           while the vendored SDK was 1.2.2. Upgraded the vendored wheel to
+           ganzin_sol_sdk-2.0.1 (2.x nests replies under .result and no longer matches them
+           by exact field set). Connect errors now list every failed init step, not just the
+           first. The vendored wheel must match the Chronus app's remote API version.
 calibration
     1.0.0  Baseline: versioning introduced.
     1.0.1  Multi-screen selection, screen-width (cm) input, image size shown in
@@ -42,7 +48,7 @@ replayer
 """
 
 APP_VERSIONS = {
-    "VA_center_opt": "1.1.0",
+    "VA_center_opt": "1.1.1",
     "calibration": "1.1.0",
     "replayer": "1.0.0",
 }

@@ -2507,6 +2507,9 @@ Controls: SPACE = Record point, Q = Cancel"""
             'screen_width_m': screen_width_m, 'pose_smooth': pose_smooth,
             'seed_homography': (self.sol_cached_homography.tolist()
                                 if self.sol_cached_homography is not None else None),
+            # Live scene camera for the operator view - only worth the child's CPU when there is a
+            # separate tester monitor to show it on.
+            'stream_frames': bool(dual_screen),
         }
 
         # Hand the device session to the isolated worker (crash-safe), like the preview.
@@ -2547,10 +2550,13 @@ Controls: SPACE = Record point, Q = Cancel"""
 
         # Operator monitoring window on the tester screen (OpenCV, like the 2D calib tester view).
         tester_win_name = "Tester View - Sol Accuracy Test"
+        latest_scene = [None]   # (frame, step) from the worker; held so the view never blinks
         if dual_screen:
             try:
-                cv2.namedWindow(tester_win_name, cv2.WINDOW_NORMAL)
-                cv2.resizeWindow(tester_win_name, 900, 640)
+                # KEEPRATIO: the canvas is now the scene camera (1328x1200), so plain WINDOW_NORMAL
+                # would stretch it and skew where the operator sees the gaze sitting.
+                cv2.namedWindow(tester_win_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+                cv2.resizeWindow(tester_win_name, 900, 813)   # 1328:1200
                 cv2.moveWindow(tester_win_name, int(tester_mon.get('x', 0)) + 50, int(tester_mon.get('y', 0)) + 50)
             except Exception as _e:
                 print(f"[Accuracy] could not create tester window: {_e}")
@@ -2592,65 +2598,100 @@ Controls: SPACE = Record point, Q = Cancel"""
             _u32_keys = None
 
         def build_tester_canvas(tgt, corr_pt, raw_pt, hom, collecting_now, n_collected):
-            """Operator monitoring canvas: a scaled schematic of the USER screen with the target
-            (red), the live offset-corrected gaze (green), the raw gaze (gray), and the live
-            target->gaze offset in px/deg. Drawn from screen-space data (no camera frame needed,
-            so it works with the isolated crash-safe scene worker)."""
-            CW, CH = 900, 640
-            canvas = np.full((CH, CW, 3), 30, dtype=np.uint8)
-            top_h, bot_h, mrg = 74, 44, 30
-            box_x0, box_y0, box_x1, box_y1 = mrg, top_h + 6, CW - mrg, CH - bot_h - 6
-            avail_w, avail_h = box_x1 - box_x0, box_y1 - box_y0
-            scale = min(avail_w / float(screen_w), avail_h / float(screen_h))
-            rect_w, rect_h = int(screen_w * scale), int(screen_h * scale)
-            rect_x = box_x0 + (avail_w - rect_w) // 2
-            rect_y = box_y0 + (avail_h - rect_h) // 2
-            sx = lambda x: int(rect_x + x * scale)
-            sy = lambda y: int(rect_y + y * scale)
-            # user-screen rectangle
-            cv2.rectangle(canvas, (rect_x, rect_y), (rect_x + rect_w, rect_y + rect_h), (70, 70, 80), -1)
-            cv2.rectangle(canvas, (rect_x, rect_y), (rect_x + rect_w, rect_y + rect_h), (150, 150, 150), 1)
-            # target (red) with crosshair
-            tgx, tgy = sx(tgt['x']), sy(tgt['y'])
-            cv2.circle(canvas, (tgx, tgy), 13, (0, 0, 255), 2)
-            cv2.drawMarker(canvas, (tgx, tgy), (0, 0, 255), cv2.MARKER_CROSS, 26, 2)
-            # raw gaze (dim gray)
-            if raw_pt is not None and np.isfinite(raw_pt[0]) and np.isfinite(raw_pt[1]):
-                cv2.circle(canvas, (sx(raw_pt[0]), sy(raw_pt[1])), 6, (120, 120, 120), 1)
-            # corrected gaze (green) + offset line/label
-            if corr_pt is not None and np.isfinite(corr_pt[0]) and np.isfinite(corr_pt[1]):
-                ggx, ggy = sx(corr_pt[0]), sy(corr_pt[1])
-                cv2.line(canvas, (tgx, tgy), (ggx, ggy), (0, 220, 220), 1)
-                cv2.circle(canvas, (ggx, ggy), 10, (0, 220, 0), 2)
-                cv2.circle(canvas, (ggx, ggy), 3, (0, 220, 0), -1)
-                err_px = float(np.hypot(corr_pt[0] - tgt['x'], corr_pt[1] - tgt['y']))
-                err_deg = acc.px_to_deg(err_px, view_dist_cm, screen_w, screen_width_cm)
-                cv2.putText(canvas, f"offset {err_px:.0f}px / {err_deg:.2f}deg",
-                            (min(ggx, tgx), max(top_h + 24, min(ggy, tgy) - 8)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 220), 1, cv2.LINE_AA)
+            """Operator monitoring view: the subject's LIVE scene camera with the measurement drawn
+            on top in camera space - target (red), offset-corrected gaze (green), raw gaze (gray),
+            and the live accuracy/precision readouts. Mirrors the 2D-calib tester view; the frames
+            come from the isolated worker (see sol_child.scene_publish for the cost budget).
+
+            corr_pt/raw_pt are SCREEN-space points, so they are back-projected through the inverse
+            homography; the raw gaze is already camera-space and is used directly. Falls back to a
+            status-only card until the first frame arrives.
+            """
+            got = latest_scene[0]
+            if got is None:
+                canvas = np.full((640, 900, 3), 30, dtype=np.uint8)
+                cv2.putText(canvas, "waiting for scene frames from the Sol worker...",
+                            (24, 320), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (150, 150, 150), 1, cv2.LINE_AA)
             else:
-                cv2.putText(canvas, "no gaze on screen", (rect_x + 8, rect_y + 24),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (120, 120, 200), 1, cv2.LINE_AA)
-            # top bar
-            cv2.rectangle(canvas, (0, 0), (CW, top_h), (45, 45, 45), -1)
+                frame, step = got
+                canvas = frame.copy()          # overlays must not scribble on the shared buffer
+                inv = 1.0 / float(step or 1)   # camera px -> this image's px, if the child downscaled
+
+                def cam(pt):
+                    """Screen-space point -> pixel in this image, or None."""
+                    if pt is None or not (np.isfinite(pt[0]) and np.isfinite(pt[1])):
+                        return None
+                    q = sol_projector.project_screen_to_image((float(pt[0]), float(pt[1])))
+                    if q is None or not (np.isfinite(q[0]) and np.isfinite(q[1])):
+                        return None
+                    return int(q[0] * inv), int(q[1] * inv)
+
+                tgt_c = cam((tgt['x'], tgt['y']))
+                corr_c = cam(corr_pt)
+                raw_c = None                   # raw gaze is native camera space - no homography needed
+                try:
+                    g2d = latest_gaze.combined.gaze_2d
+                    if np.isfinite(g2d.x) and np.isfinite(g2d.y):
+                        raw_c = int(g2d.x * inv), int(g2d.y * inv)
+                except Exception:
+                    raw_c = None
+
+                if raw_c is not None:
+                    cv2.circle(canvas, raw_c, 9, (150, 150, 150), 2)
+                    cv2.putText(canvas, "raw", (raw_c[0] + 12, raw_c[1] - 8),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1, cv2.LINE_AA)
+                # No target marker: the real target is already in the video, on the subject's
+                # screen. tgt_c is still computed - it anchors the offset line below.
+                if corr_c is not None:
+                    cv2.circle(canvas, corr_c, 13, (0, 220, 0), 2)
+                    cv2.circle(canvas, corr_c, 4, (0, 220, 0), -1)
+                    cv2.putText(canvas, "gaze", (corr_c[0] + 16, corr_c[1] - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 0), 2, cv2.LINE_AA)
+                if tgt_c is not None and corr_c is not None:
+                    cv2.line(canvas, tgt_c, corr_c, (0, 220, 220), 2)
+                elif tgt_c is None:
+                    cv2.putText(canvas, "no homography yet - corrected gaze not placed",
+                                (12, canvas.shape[0] - 16), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.55, (120, 120, 220), 1, cv2.LINE_AA)
+
+            H_img, W_img = canvas.shape[:2]
+            # ---- status bar (accuracy + precision, px and deg) ----
+            cv2.rectangle(canvas, (0, 0), (W_img, 92), (40, 40, 40), -1)
             cv2.putText(canvas, f"Accuracy Test - point {idx + 1}/{len(targets)}  "
                                 f"({tgt['name']}, {tgt['ecc_deg']:.0f}deg)",
                         (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.64, (255, 255, 255), 2, cv2.LINE_AA)
             hom_col = {"LIVE": (100, 255, 100), "CACHED": (100, 255, 255)}.get(hom, (100, 100, 255))
-            cv2.putText(canvas, f"Homography: {hom}", (12, 58),
+            cv2.putText(canvas, f"Homography: {hom}", (12, 56),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.56, hom_col, 1, cv2.LINE_AA)
             if collecting_now:
                 s2, s2col = f"COLLECTING {n_collected}/{SAMPLES} - subject must hold fixation", (0, 255, 255)
             elif hom in ("LIVE", "CACHED"):
-                s2, s2col = "READY - when the subject fixates the red target, press SPACE", (200, 255, 200)
+                s2, s2col = "READY - when the subject fixates the target, press SPACE", (200, 255, 200)
             else:
                 s2, s2col = "waiting for ArUco markers (LIVE/CACHED)...", (150, 150, 255)
-            cv2.putText(canvas, s2, (210, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.54, s2col, 1, cv2.LINE_AA)
-            # legend + controls
-            cv2.putText(canvas, "red = target   green = subject gaze   gray = raw",
-                        (12, CH - bot_h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (180, 180, 180), 1, cv2.LINE_AA)
+            cv2.putText(canvas, s2, (210, 56), cv2.FONT_HERSHEY_SIMPLEX, 0.54, s2col, 1, cv2.LINE_AA)
+
+            # accuracy = |gaze - target| now; precision = spread of what we have collected so far
+            read = []
+            if corr_pt is not None and np.isfinite(corr_pt[0]) and np.isfinite(corr_pt[1]):
+                e_px = float(np.hypot(corr_pt[0] - tgt['x'], corr_pt[1] - tgt['y']))
+                read.append(f"accuracy {e_px:.0f}px / "
+                            f"{acc.px_to_deg(e_px, view_dist_cm, screen_w, screen_width_cm):.2f}deg")
+            else:
+                read.append("accuracy --  (no gaze on screen)")
+            if len(corr_samples) > 1:
+                # same definition as compute_point_record: RMS distance from the sample centroid
+                a = np.asarray(corr_samples, dtype=float)
+                p_px = float(np.sqrt(np.mean(np.sum((a - a.mean(axis=0)) ** 2, axis=1))))
+                read.append(f"precision {p_px:.0f}px / "
+                            f"{acc.px_to_deg(p_px, view_dist_cm, screen_w, screen_width_cm):.2f}deg "
+                            f"(n={len(corr_samples)})")
+            cv2.putText(canvas, "   ".join(read), (12, 82),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.54, (0, 220, 220), 1, cv2.LINE_AA)
+            cv2.putText(canvas, "green = subject gaze   gray = raw   (target is visible in the video)",
+                        (12, H_img - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
             cv2.putText(canvas, "SPACE = record    Q/ESC = abort",
-                        (CW - 320, CH - bot_h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA)
+                        (W_img - 340, H_img - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
             return canvas
 
         print(f"[Accuracy] {len(targets)} targets. Subject fixates each target; operator presses "
@@ -2691,6 +2732,10 @@ Controls: SPACE = Record point, Q = Cancel"""
 
                 for g in sol_client.drain_gaze():
                     latest_gaze = g
+                if dual_screen:
+                    _sf = sol_client.drain_frames()
+                    if _sf is not None:      # hold the last frame when none arrived, so it doesn't blink
+                        latest_scene[0] = _sf
                 for m in sol_client.drain_msgs():
                     t = m.get('type')
                     if t == 'homography':
@@ -2707,6 +2752,10 @@ Controls: SPACE = Record point, Q = Cancel"""
                                                bool(m.get('valid', False)))
                     elif t == 'connected':
                         sol_client.resume()
+                    elif t in ('error', 'connect_failed'):
+                        # The worker has no console of its own; without this its startup diagnostic
+                        # and any streaming failure are dropped on the floor.
+                        print(f"[Accuracy] worker {m.get('where', t)}: {m.get('error')}")
                 _ev = sol_client.poll_supervisor(time.time(), sol_projector.get_homography())
                 if _ev == 'crashed':
                     sol_projector.homography_valid = False; detected_marker_ids = []

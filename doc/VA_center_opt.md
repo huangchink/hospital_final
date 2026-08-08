@@ -63,8 +63,12 @@ VA_center_opt presents circular sinusoidal gratings at the center of the screen 
 
 | Setting | Description | Default |
 |---------|-------------|---------|
+| Test Screen | Monitor the subject sees (stimuli, calibration targets) | 0 (primary) |
+| Tester Screen | Operator-only monitor. When it differs from Test Screen, the tester views open there | 1 (secondary) |
 | Screen Width (cm) | Physical width of the display monitor | 52.6 |
 | Viewing Distance (cm) | Distance from user's eyes to the screen | 50 |
+
+> **Note:** Test Screen and Tester Screen used to live on the *Sol Calib* tab under *Display Settings*. They moved here because every flow uses them — the VA/VF test, Sol calibration and the accuracy test — not just Sol calibration. Saved settings carry over unchanged.
 
 ### General Tab - Inter-trial
 
@@ -108,7 +112,7 @@ Offset calibration for Sol glasses. Corrects systematic gaze offset when the Sol
 
 **Accuracy Test** (button in *Preview Gaze Mapping*): measures Sol gaze accuracy + precision before and after the loaded 2D offset, over concentric-ring + corner targets, and saves a CSV/JSON report plus heatmap/by-angle PNGs under `accuracy_test/`. The subject fixates each target and the operator presses **SPACE** (ESC/Q aborts).
 
-- Set the accuracy test's subject screen with *Preview Gaze Mapping → Screen*, and the operator's monitoring screen with *Display → Tester Screen*. When these are two different monitors, a **tester view** opens on the Tester Screen showing the subject's **live front (scene) camera** from the Sol glasses, with the offset-corrected gaze (green dot) and the raw gaze (gray) drawn on top in camera space, plus live **accuracy and precision** in px and deg. The target itself is not redrawn — you see the real one on the subject's screen in the video — and a yellow line runs from the gaze marker to it. Confirm the gaze dot is on the target, then press SPACE.
+- Set the accuracy test's subject screen with *Preview Gaze Mapping → Screen*, and the operator's monitoring screen with *General → Screen & Viewing → Tester Screen*. When these are two different monitors, a **tester view** opens on the Tester Screen showing the subject's **live front (scene) camera** from the Sol glasses, with the offset-corrected gaze (green dot) and the raw gaze (gray) drawn on top in camera space, plus live **accuracy and precision** in px and deg. The target itself is not redrawn — you see the real one on the subject's screen in the video — and a yellow line runs from the gaze marker to it. Confirm the gaze dot is on the target, then press SPACE.
 - The camera picture appears as soon as frames arrive; the target and corrected-gaze markers need a valid homography, so until the ArUco markers are found you see the video with the raw gaze only and a "no homography yet" note.
 - The tester view is shown only on the Tester Screen; the subject never sees a gaze dot (so they cannot chase it and bias the measurement). With a single monitor the test runs as before, without a tester window.
 

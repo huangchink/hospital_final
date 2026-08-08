@@ -725,15 +725,25 @@ class SettingsWindow(tk.Tk):
         grp_screen = ttk.LabelFrame(parent, text="Screen & Viewing"); grp_screen.pack(fill="x", padx=10, pady=5)
         r = 0
 
-        # Test Screen dropdown (shares variable with Sol calibration "User Screen")
-        test_screen_options = []
-        for mon in get_monitor_info_windows():
-            test_screen_options.append(f"{mon['index']}: {mon['name']} ({mon['width']}x{mon['height']})")
-        if not test_screen_options:
-            test_screen_options = ["0: Primary Display"]
+        # Which monitor the subject sees and which one the operator watches. These live here
+        # because every flow uses them (VA/VF test, Sol calib, accuracy test), not just Sol calib.
+        # monitor_info_list is the cached list the screen-picking handlers read at run time.
+        self.monitor_info_list = get_monitor_info_windows()
+        screen_options = [f"{mon['index']}: {mon['name']} ({mon['width']}x{mon['height']})"
+                          for mon in self.monitor_info_list]
+        if not screen_options:
+            screen_options = ["0: Primary Display"]
+
         ttk.Label(grp_screen, text="Test Screen:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
-        self.cmb_test_screen = ttk.Combobox(grp_screen, textvariable=self.sol_offset_user_screen_var, values=test_screen_options, state="readonly", width=30)
+        self.cmb_test_screen = ttk.Combobox(grp_screen, textvariable=self.sol_offset_user_screen_var, values=screen_options, state="readonly", width=30)
         self.cmb_test_screen.grid(row=r, column=1, sticky="w", **pad); r += 1
+
+        # Operator-only monitor. When it differs from Test Screen, the tester views open on it.
+        # No .current() here: the vars default to "0"/"1", which the ":"-split parsers already
+        # read correctly, and forcing a selection would clobber values restored from settings.
+        ttk.Label(grp_screen, text="Tester Screen:", font=l_font).grid(row=r, column=0, sticky="w", **pad)
+        self.cmb_tester_screen = ttk.Combobox(grp_screen, textvariable=self.sol_offset_tester_screen_var, values=screen_options, state="readonly", width=30)
+        self.cmb_tester_screen.grid(row=r, column=1, sticky="w", **pad); r += 1
 
         ttk.Label(grp_screen, text="Screen Width (cm):", font=l_font).grid(row=r, column=0, sticky="w", **pad)
         ttk.Spinbox(grp_screen, textvariable=self.scr_width_cm_var, from_=10, to=300, increment=0.5, font=e_font, width=10).grid(row=r, column=1, sticky="w", **pad); r += 1
@@ -914,31 +924,8 @@ class SettingsWindow(tk.Tk):
                      values=["Screen-space (recommended)", "Camera-space (legacy)"],
                      state="readonly", width=26).grid(row=3, column=1, columnspan=2, sticky="w", **pad)
 
-        # Display Settings
-        grp_display = ttk.LabelFrame(parent, text="Display Settings")
-        grp_display.pack(fill="x", padx=10, pady=5)
-
-        self.monitor_info_list = get_monitor_info_windows()
-        screen_options = []
-        for mon in self.monitor_info_list:
-            label = f"{mon['index']}: {mon['name']} ({mon['width']}x{mon['height']})"
-            screen_options.append(label)
-        if len(screen_options) < 2:
-            screen_options.append("1: Secondary Display (1920x1080)")
-
-        ttk.Label(grp_display, text="User Screen:", font=l_font).grid(row=0, column=0, sticky="w", **pad)
-        self.cmb_user_screen = ttk.Combobox(grp_display, textvariable=self.sol_offset_user_screen_var, values=screen_options, state="readonly", width=40)
-        self.cmb_user_screen.grid(row=0, column=1, sticky="w", **pad)
-        if screen_options:
-            self.cmb_user_screen.current(0)
-
-        ttk.Label(grp_display, text="Tester Screen:", font=l_font).grid(row=1, column=0, sticky="w", **pad)
-        self.cmb_tester_screen = ttk.Combobox(grp_display, textvariable=self.sol_offset_tester_screen_var, values=screen_options, state="readonly", width=40)
-        self.cmb_tester_screen.grid(row=1, column=1, sticky="w", **pad)
-        if len(screen_options) > 1:
-            self.cmb_tester_screen.current(1)
-        elif screen_options:
-            self.cmb_tester_screen.current(0)
+        # Display Settings moved to the General tab (Screen & Viewing): the same two monitors are
+        # used by the VA/VF test and the accuracy test, not only by Sol calib.
 
         # Current Offset Status (shows both 3D and 2D)
         grp_status = ttk.LabelFrame(parent, text="Current Offset Status")

@@ -40,6 +40,9 @@ VA_center_opt
            cost: the worker sends a plain contiguous frame copy (~1.0 ms) instead of a
            full-frame JPEG encode (~12.0 ms), so the crash-prone decode process is no longer
            starved. Worker errors are now printed instead of silently dropped.
+           Test Screen / Tester Screen moved from the Sol Calib tab's "Display Settings" to
+           General -> Screen & Viewing: every flow uses them, not just Sol calib. Same saved
+           settings keys, so existing settings files keep working.
 calibration
     1.0.0  Baseline: versioning introduced.
     1.0.1  Multi-screen selection, screen-width (cm) input, image size shown in
